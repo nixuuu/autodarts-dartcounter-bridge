@@ -1,10 +1,10 @@
 # AutoDarts → DartCounter Bridge
 
-Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled.
+Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled. Optional fun sounds for some darts (laugh, cheer, boo, combo).
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.2.1**.
+Wersja: **3.3.0**.
 
 ## Instalacja
 
@@ -44,6 +44,43 @@ Sposób wpisu wynika z klawiatury wybranej w meczu DartCounter (ikona klawiatury
 
 Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma pierwszeństwo: przy klawiaturze lotek skrypt zawsze wpisuje lotka po lotce, przy polu tekstowym lub klawiaturze z cyframi — sumę.
 
+## Dźwięki lotek (od 3.3.0)
+
+Karta DartCounter gra krótki dźwięk przy niektórych lotkach:
+
+| Lotka | Dźwięk |
+|---|---|
+| S1, D1, T1 | śmiech (`laugh-2.mp3`) |
+| T20 | brawa (`cheer-2.mp3`) |
+| pudło (lotka poza tarczą, Miss / 0) | buczenie (`boo-3.mp3`) |
+| tura S1 + S5 + S20 w dowolnej kolejności | combo (`combo-6.mp3`) |
+
+- **Combo ma pierwszeństwo.** Przy turze S1 + S5 + S20 gra tylko combo, na koniec tury (po trzeciej lotce), a śmiech za S1 nie gra. Dlatego śmiech za S1 czeka, dopóki combo jest jeszcze możliwe. Gdy kolejna lotka psuje combo, śmiech gra wtedy (albo gra dźwięk tej nowszej lotki, jeśli ma własny), a gdy tura kończy się bez combo — na koniec tury.
+- **Jeden dźwięk naraz:** nowy dźwięk przerywa poprzedni. Bez kolejki, bo kolejka z dźwiękami po ~3 s zostawałaby w tyle za lotkami.
+- Pozostałe lotki są ciche. Poprawka lotki w grze nie jest nową lotką i nie gra dźwięku.
+
+Jak włączyć:
+
+1. Obok kółka **AD2DC** (prawy dolny róg DartCounter) jest okrągły przycisk z **głośnikiem**. Jest widoczny też przy zwiniętym panelu.
+2. Jedno kliknięcie przełącza dźwięki: zielony głośnik = włączone (domyślnie), szary głośnik z krzyżykiem = wyciszone. Stan zapisuje się w pamięci skryptu (`GM_setValue`) i zostaje po odświeżeniu strony.
+3. Przeglądarka pozwala grać dźwięk dopiero po kliknięciu na stronie. Pierwsze kliknięcie w DartCounter (np. w głośnik albo **Test dźwięku** w panelu) odblokowuje audio. Do tego czasu nic nie gra i nie ma błędów w konsoli; wiersz „Dźwięki” w panelu pokazuje „zablokowane do pierwszego kliknięcia”.
+4. W rozwiniętym panelu: suwak **Głośność** (domyślnie 60%) i przycisk **Test dźwięku**.
+
+Dźwięki działają obok mostu: nie opóźniają i nie zmieniają wpisu do DartCounter. Grają tylko w aktywnej karcie DartCounter, dla obu źródeł lotek.
+
+Pliki leżą w `sounds/` w tym repo. Skrypt pobiera je raz (po odblokowaniu audio) z `raw.githubusercontent.com` (gałąź `main`) przez `GM_xmlhttpRequest` i gra przez WebAudio. Dlaczego tak, a nie data URI w skrypcie: skrypt zostaje mały (aktualizacje są lekkie, ~80 KB zamiast ~250 KB), zostaje czytelnym ASCII, a dźwięki można wymienić bez zmiany kodu. `GM_xmlhttpRequest` + WebAudio omija ograniczenia CSP strony DartCounter dla zewnętrznych plików audio.
+
+### Licencje dźwięków
+
+Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Zmiany: przycięcie, wyciszenie na początku i końcu, normalizacja głośności (ffmpeg loudnorm), MP3 mono 44,1 kHz 96 kbit/s.
+
+| Plik | Źródło | Autor | Licencja |
+|---|---|---|---|
+| `sounds/laugh-2.mp3` | [Scotcampbell - clown laugh (cc0) (freesound).mp3](https://commons.wikimedia.org/wiki/File:Scotcampbell_-_clown_laugh_(cc0)_(freesound).mp3) (Wikimedia Commons, import z Freesound) | scotcampbell | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `sounds/cheer-2.mp3` | [277021 sandermotions applause-2.wav](https://commons.wikimedia.org/wiki/File:277021_sandermotions_applause-2.wav) (Wikimedia Commons, import z Freesound #277021) | Sandermotions | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `sounds/boo-3.mp3` | [Red_Library_Crowds_Men](https://archive.org/details/Red_Library_Crowds_Men), plik „R08-34-Men Booing” (Internet Archive) | USC Cinema / Sunset Editorial Collection | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `sounds/combo-6.mp3` | [Bicycle Horn](https://opengameart.org/content/bicycle-horn), plik „bicycle-horn-1.wav” (OpenGameArt) | antumdeluge | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+
 ## Mecz w DartCounter
 
 - Graj lokalnie → Mecz (X01) → Start. Adres strony: `app.dartcounter.net/game/match`.
@@ -54,7 +91,7 @@ Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma p
 
 Małe kółko w prawym dolnym rogu (kliknij, żeby rozwinąć). Kolor kropki: zielony = działa, żółty = otwórz mecz / grę, czerwony = błąd, szary = most wyłączony.
 
-Przyciski: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Opóźnienie, Zwiń. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
+Obok kółka: przycisk głośnika (dźwięki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test dźwięku, suwak Głośność, Opóźnienie, Zwiń. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
 
 ## Zasady wpisu
 
@@ -76,6 +113,7 @@ Przyciski: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy sta
 - Rozpoznanie gracza na ruchu przy 2+ graczach w trybie sumy jest przybliżone (dotyczy tylko końca bez podwójnej i potwierdzenia przerzucenia).
 - Klawiatura DartCounter z klikaną tarczą („dartboard”) nie jest obsługiwana w trybie lotka po lotce.
 - Przy źródle lokalnym w Autodarts v2+ lokalne API może zależeć od wersji Board Managera.
+- Dźwięki wymagają jednego kliknięcia na stronie DartCounter po jej otwarciu (zasady autoodtwarzania) oraz dostępu do `raw.githubusercontent.com`.
 
 ## Testy
 
@@ -84,8 +122,8 @@ npm install
 npm test
 ```
 
-Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku) oraz symulacje stron (jsdom): DartCounter (oba sposoby wpisu, DartBot, przerzucenie, zakończenie) i karta gry Autodarts.
+Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo) oraz symulacje stron (jsdom): DartCounter (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, przycisk głośnika) i karta gry Autodarts.
 
 ## Licencja
 
-MIT © 2026 nixuuu
+Kod: MIT © 2026 nixuuu. Dźwięki: CC0 1.0 (tabela w sekcji „Licencje dźwięków”).

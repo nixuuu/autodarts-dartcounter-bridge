@@ -277,6 +277,70 @@ test("game: joined mid-turn sends it at the end; joined on a finished leg sends 
   assert.deepEqual(runMatch([match(4, [T20]), Object.assign(match(1, []), { id: "m2" })]), []);
 });
 
+// ---------- dart sounds (3.3.0) ----------
+// steps: [turnKey, [labels...]] snapshots; returns the sounds in order
+function sounds(steps) {
+  const out = [];
+  const r = Core.createSoundRules(name => out.push(name));
+  for (const [key, labels] of steps) r.update(key, labels.map(l => Core.normalizeThrow(l)), key === "local");
+  return out;
+}
+// one turn thrown dart by dart, then the next turn starts (turn end)
+function turnSounds(labels) {
+  const steps = [["t0", []]];
+  for (let i = 1; i <= labels.length; i++) steps.push(["t1", labels.slice(0, i)]);
+  steps.push(["t2", []]);
+  return sounds(steps);
+}
+
+test("dart -> sound: S1/D1/T1 laugh, T20 cheer, miss boo, others none", () => {
+  const ds = l => Core.dartSound(Core.normalizeThrow(l));
+  assert.equal(ds("S1"), "laugh"); assert.equal(ds("D1"), "laugh"); assert.equal(ds("T1"), "laugh");
+  assert.equal(ds("T20"), "cheer");
+  assert.equal(ds("M12"), "boo"); assert.equal(ds("Miss"), "boo");
+  for (const l of ["S20", "D20", "S5", "T19", "BULL", "25", "D16", "S11"]) assert.equal(ds(l), null, l);
+  assert.equal(Core.dartSound(Core.normalizeThrow({ foo: 1 })), null);
+  assert.equal(Core.dartSound(Core.normalizeThrow(newT("M7", 7, 0, "Outside"))), "boo");
+});
+
+test("sounds: one per dart, in throw order", () => {
+  assert.deepEqual(turnSounds(["T20", "M3", "D1"]), ["cheer", "boo", "laugh"]);
+  assert.deepEqual(turnSounds(["T1", "S19", "T20"]), ["laugh", "cheer"]);
+  assert.deepEqual(turnSounds(["S20", "S5", "S19"]), []);
+});
+
+test("combo S1 + S5 + S20 in any order: combo only, no laugh", () => {
+  const perms = [["S1", "S5", "S20"], ["S1", "S20", "S5"], ["S5", "S1", "S20"], ["S5", "S20", "S1"], ["S20", "S1", "S5"], ["S20", "S5", "S1"]];
+  for (const p of perms) assert.deepEqual(turnSounds(p), ["combo"], p.join(" "));
+});
+
+test("combo has priority: S1 laugh waits while the combo is possible", () => {
+  const steps = [["t0", []], ["t1", ["S1"]]];
+  assert.deepEqual(sounds(steps), []); // S1 thrown: nothing yet
+  assert.deepEqual(sounds([...steps, ["t1", ["S1", "S5"]]]), []);
+  assert.deepEqual(sounds([...steps, ["t1", ["S1", "S5"]], ["t1", ["S1", "S5", "S20"]]]), ["combo"]);
+});
+
+test("combo broken: the waiting S1 laugh plays then (or the newer dart's own sound)", () => {
+  assert.deepEqual(turnSounds(["S1", "S5", "S19"]), ["laugh"]);   // laugh plays at the 3rd dart
+  assert.deepEqual(turnSounds(["S1", "T20"]), ["cheer"]);         // newer sound wins (one sound at a time)
+  assert.deepEqual(turnSounds(["S1", "M4"]), ["boo"]);
+  assert.deepEqual(turnSounds(["S1", "S5"]), ["laugh"]);          // turn ended with 2 darts: laugh at turn end
+  assert.deepEqual(turnSounds(["D1", "S5", "S20"]), ["laugh"]);   // D1 is not part of the combo
+  assert.deepEqual(turnSounds(["S1", "S1"]), ["laugh"]);
+});
+
+test("sounds: repeated snapshots and the starting state are silent", () => {
+  assert.deepEqual(sounds([["t1", ["T20", "M1"]], ["t1", ["T20", "M1"]], ["t1", ["T20", "M1"]]]), []);
+  assert.deepEqual(sounds([["t0", []], ["t1", ["T20"]], ["t1", ["T20"]], ["t1", ["T20"]]]), ["cheer"]);
+});
+
+test("sounds: undo of S1 cancels its waiting laugh; local board empty ends the turn", () => {
+  assert.deepEqual(sounds([["t0", []], ["t1", ["S1"]], ["t1", []], ["t2", []]]), []);
+  assert.deepEqual(sounds([["local", []], ["local", ["S5"]], ["local", ["S5", "S1"]], ["local", []]]), ["laugh"]);
+  assert.deepEqual(sounds([["local", []], ["local", ["S5", "S20", "S1"]], ["local", []], ["local", ["T20"]]]), ["combo", "cheer"]);
+});
+
 const D = (lbl) => Core.normalizeThrow(lbl);
 test("decideScore: normal, unknown remaining", () => {
   assert.equal(Core.decideScore([D("T20"), D("T20"), D("T20")], null, false, true).score, 180);

@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.2.1
+// @version      3.3.0
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -30,11 +30,19 @@
 // @grant        unsafeWindow
 // @connect      127.0.0.1
 // @connect      localhost
+// @connect      raw.githubusercontent.com
 // @connect      *
 // ==/UserScript==
 
 /*
- * AD2DC 3.2.1
+ * AD2DC 3.3.0
+ *
+ * Dart sounds (3.3.0): S1/D1/T1 -> laugh, T20 -> cheer, miss (outside the board) -> boo,
+ *   a turn of exactly S1 + S5 + S20 (any order) -> combo sound at the end of the turn instead of the S1 laugh.
+ *   One sound at a time: a new sound stops the one that is playing (no queue, so sounds never lag behind the darts).
+ *   Files in sounds/ (CC0 / public domain, see README), loaded once from raw.githubusercontent.com (main) with
+ *   GM_xmlhttpRequest and played with WebAudio. The audio context is created on the first real click / key press
+ *   (autoplay rules). Sounds run beside the bridge and never delay or change the score entry.
  *
  * Source "gra" (default): an X01 game open on play.autodarts.com / .io. The script listens to the page's own
  *   WebSocket (channel autodarts.matches, match state, turns[0] = turn in progress). Corrections made in the
@@ -71,7 +79,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.2.1";
+  const VERSION = "3.3.0";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -347,6 +355,64 @@
       };
     }
 
+    // ----- dart sounds -----
+    // Sound for one dart: "laugh" (S1/D1/T1), "cheer" (T20), "boo" (miss), or null.
+    function dartSound(d) {
+      if (!d || d.ok === false) return null;
+      if (d.multiplier === 0) return "boo";
+      if (d.number === 1 && d.multiplier >= 1 && d.multiplier <= 3) return "laugh";
+      if (d.number === 20 && d.multiplier === 3) return "cheer";
+      return null;
+    }
+    const COMBO = ["S1", "S5", "S20"];
+    function comboPossible(darts) {
+      if (darts.length > 3) return false;
+      const labels = darts.map(d => d && d.label);
+      return labels.every(l => COMBO.includes(l)) && new Set(labels).size === labels.length;
+    }
+    function isCombo(darts) { return darts.length === 3 && comboPossible(darts); }
+
+    // Feed it the darts of the current turn after every update (repeats are fine).
+    // key = turn id (game: match/turn, the turn ends when the key changes; an empty turn = undo).
+    // Local board: constant key and emptyEndsTurn = true (darts pulled = end of the turn).
+    // Calls onSound(name, why) for every NEW dart. The S1 laugh waits while S1 + S5 + S20 is still
+    // possible: the combo replaces it; if the combo breaks, the laugh plays then (or the newer dart's
+    // own sound plays instead), and at the end of a turn without combo.
+    // The first update is the baseline: darts already there make no sound.
+    function createSoundRules(onSound) {
+      let turn = null;
+      function endTurn(why) {
+        if (turn && turn.pending) onSound("laugh", "S1 (" + why + ")");
+        if (turn) turn.pending = false;
+      }
+      return {
+        update(key, darts, emptyEndsTurn) {
+          darts = (darts || []).filter(Boolean);
+          if (!turn) { turn = { key, n: darts.length, pending: false }; return; }
+          if (key !== turn.key) { endTurn("koniec tury"); turn = { key, n: 0, pending: false }; }
+          if (emptyEndsTurn && darts.length === 0 && turn.n > 0) { endTurn("koniec tury"); turn.n = 0; return; }
+          if (darts.length < turn.n) { // undo / correction removed darts
+            turn.n = darts.length;
+            if (turn.pending && !(darts.some(d => d.label === "S1") && comboPossible(darts))) turn.pending = false;
+            return;
+          }
+          for (let i = turn.n; i < darts.length; i++) {
+            const prefix = darts.slice(0, i + 1), d = darts[i];
+            if (isCombo(prefix)) { turn.pending = false; onSound("combo", "S1 + S5 + S20"); continue; }
+            const own = dartSound(d);
+            if (d.label === "S1" && comboPossible(prefix)) { turn.pending = true; continue; }
+            if (turn.pending && !comboPossible(prefix)) {
+              turn.pending = false;
+              if (own) onSound(own, d.label); else onSound("laugh", "S1");
+              continue;
+            }
+            if (own) onSound(own, d.label);
+          }
+          turn.n = darts.length;
+        }
+      };
+    }
+
     // Score to enter for a visit.
     // remaining: current player's rest (or null). reliable: true when we are sure it is the current player.
     function decideScore(darts, remaining, reliable, doubleOut) {
@@ -365,7 +431,8 @@
       return { score: total, total, note: "" };
     }
 
-    return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker };
+    return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
+      dartSound, comboPossible, isCombo, createSoundRules };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -395,6 +462,8 @@
     doubleOut: "ad2dc3_double_out",
     sendDelay: "ad2dc3_send_delay",
     entryMode: "ad2dc3_entry_mode",
+    sounds: "ad2dc3_sounds",
+    soundVolume: "ad2dc3_sound_volume",
     leader: "ad2dc3_leader",
     lastEntered: "ad2dc3_last_entered",
     relay: "ad2dc3_relay",
@@ -473,6 +542,82 @@
     ui.render();
   }
 
+  // ---------- Dart sounds: WebAudio player (unlocked by the first real click / key press) ----------
+  const SOUND_BASE = "https://raw.githubusercontent.com/nixuuu/autodarts-dartcounter-bridge/main/sounds/";
+  const SOUND_FILES = { laugh: "laugh-2.mp3", cheer: "cheer-2.mp3", boo: "boo-3.mp3", combo: "combo-6.mp3" };
+  const Sound = (() => {
+    let ctx = null, loading = null, current = null, state = "zablokowany do pierwszego klikni\u0119cia";
+    const buffers = {};
+    const AC = typeof window !== "undefined" ? (window.AudioContext || window.webkitAudioContext) : null;
+
+    function fetchArrayBuffer(url) {
+      return new Promise((resolve, reject) => {
+        const d = {
+          method: "GET", url, timeout: 15000, responseType: "arraybuffer",
+          onload: r => (r.status === 200 && r.response && typeof r.response.byteLength === "number" ? resolve(r.response) : reject(new Error("HTTP " + r.status))),
+          onerror: () => reject(new Error("brak po\u0142\u0105czenia")), ontimeout: () => reject(new Error("przekroczony czas"))
+        };
+        try {
+          if (typeof GM_xmlhttpRequest === "function") GM_xmlhttpRequest(d);
+          else if (typeof GM !== "undefined" && GM && typeof GM.xmlHttpRequest === "function") {
+            const p = GM.xmlHttpRequest(d);
+            if (p && typeof p.catch === "function") p.catch(() => reject(new Error("GM.xmlHttpRequest")));
+          } else reject(new Error("brak GM_xmlhttpRequest"));
+        } catch (e) { reject(e); }
+      });
+    }
+    function decode(ab) {
+      return new Promise((resolve, reject) => {
+        try { const p = ctx.decodeAudioData(ab, resolve, reject); if (p && typeof p.catch === "function") p.catch(reject); } catch (e) { reject(e); }
+      });
+    }
+    function load() {
+      if (loading || !ctx) return loading;
+      state = "\u0142aduj\u0119 d\u017awi\u0119ki";
+      loading = (async () => {
+        for (const name of Object.keys(SOUND_FILES)) {
+          try { buffers[name] = await decode(await fetchArrayBuffer(SOUND_BASE + SOUND_FILES[name])); }
+          catch (e) { log("D\u017awi\u0119k " + SOUND_FILES[name] + " nie wczytany: " + errText(e)); }
+        }
+        const n = Object.keys(buffers).length;
+        state = n ? "gotowe (" + n + "/4)" : "brak d\u017awi\u0119k\u00f3w (b\u0142\u0105d pobierania)";
+        ui.render();
+      })();
+      return loading;
+    }
+    // Call from a real user gesture (click / key press). Safe to call many times.
+    function unlock() {
+      if (!AC) { state = "przegl\u0105darka bez WebAudio"; return; }
+      try {
+        if (!ctx) ctx = new AC();
+        if (ctx.state === "suspended" && typeof ctx.resume === "function") ctx.resume().catch(() => {});
+        const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); // silent tick: unlocks Safari
+        src.buffer = b; src.connect(ctx.destination); src.start(0);
+        load();
+      } catch (e) { state = "niedost\u0119pne"; }
+    }
+    // Fire-and-forget, never throws. A new sound stops the one that is playing.
+    function play(name, volume) {
+      try {
+        if (!ctx || ctx.state !== "running" || !buffers[name]) return false;
+        if (current) { try { current.stop(0); } catch (_) {} current = null; }
+        const src = ctx.createBufferSource(), gain = ctx.createGain();
+        gain.gain.value = Math.max(0, Math.min(1, volume));
+        src.buffer = buffers[name]; src.connect(gain); gain.connect(ctx.destination);
+        src.onended = () => { if (current === src) current = null; };
+        src.start(0);
+        current = src;
+        return true;
+      } catch (_) { return false; }
+    }
+    function stop() { if (current) { try { current.stop(0); } catch (_) {} current = null; } }
+    return {
+      unlock, play, stop,
+      get state() { return ctx && ctx.state === "suspended" ? "zablokowane do pierwszego klikni\u0119cia" : state; },
+      get ready() { return !!(ctx && ctx.state === "running" && Object.keys(buffers).length); }
+    };
+  })();
+
   // ---------- Clipboard ----------
   async function copyText(text) {
     try { if (typeof GM_setClipboard === "function") { GM_setClipboard(text, "text"); return true; } } catch (_) {}
@@ -495,10 +640,18 @@
     const f = {}; // field values
     let rootEl = null, sh = null, open = false, mounted = false, renderQueued = false;
     const buttons = [];
-    let stripJson = "", pickSlot = null, pickMult = 1, onPick = null;
+    let stripJson = "", pickSlot = null, pickMult = 1, onPick = null, quickKey = "", onQuick = null;
+    // speaker icons (inline SVG, plain ASCII in the file)
+    const SPEAKER = '<path d="M11 5 6 9H2v6h4l5 4z" fill="currentColor"/>';
+    const ICON_ON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      SPEAKER + '<path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg>';
+    const ICON_OFF = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      SPEAKER + '<path d="M22 9l-6 6"/><path d="M16 9l6 6"/></svg>';
 
     function set(k, v) { if (f[k] !== v) { f[k] = v; render(); } }
     function addButton(id, label, fn) { buttons.push({ id, label, fn }); }
+    const sliders = [];
+    function addSlider(id, label, get, onInput) { sliders.push({ id, label, get, onInput }); }
 
     function mount(isOpen) {
       if (mounted) return;
@@ -528,6 +681,11 @@
            background: #374151; color: #fff; cursor: pointer; }
   textarea { width: 100%; height: 80px; font: 10px monospace; }
   .wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .row1 { display: flex; gap: 6px; align-items: center; }
+  .snd { width: 30px; height: 30px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+         background: #111827; border: 2px solid #22c55e; color: #22c55e; box-shadow: 0 2px 6px rgba(0,0,0,.35); cursor: pointer; }
+  .snd.off { border-color: #6b7280; color: #9ca3af; }
+  .snd:hover { filter: brightness(1.25); }
   .strip { display: flex; gap: 4px; align-items: center; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 4px 6px;
            font: 600 12px/1 -apple-system, system-ui, sans-serif; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
   .strip .t { font-weight: 400; color: #9ca3af; font-size: 11px; }
@@ -545,18 +703,21 @@
 <div class="wrap">
 <div class="picker" id="picker" hidden></div>
 <div class="strip" id="strip" hidden></div>
-<div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pilltxt">AD2DC</span></div>
+<div class="row1"><button type="button" class="snd" id="snd" hidden></button>
+<div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pilltxt">AD2DC</span></div></div>
 <div class="box" id="box" hidden>
   <div class="row"><b>AD2DC ${VERSION}</b> \u00b7 ${role} \u00b7 <span id="mgr"></span></div>
   <div id="rows"></div>
   <div class="hint" id="hint"></div>
   <div class="err" id="err"></div>
   <div class="btns" id="btns"></div>
+  <div id="sliders"></div>
   <textarea id="manual" hidden readonly></textarea>
   <div class="log" id="log"></div>
 </div>
 </div>`;
       sh.getElementById("pill").addEventListener("click", () => toggle(true));
+      sh.getElementById("snd").addEventListener("click", ev => { ev.stopPropagation(); if (onQuick) onQuick(); });
       sh.getElementById("strip").addEventListener("click", ev => {
         const b = ev.target.closest && ev.target.closest("[data-slot]");
         if (!b) return;
@@ -581,6 +742,17 @@
         if (choice !== "close" && onPick && slot != null) onPick(slot, choice);
       });
       sh.getElementById("mgr").textContent = managerName();
+      const sw = sh.getElementById("sliders");
+      for (const sl of sliders) {
+        const row = document.createElement("label");
+        row.className = "row"; row.dataset.id = sl.id;
+        row.innerHTML = `<span class="sl-l"></span> <input type="range" min="0" max="100" step="5" style="width:150px;vertical-align:middle">`;
+        const input = row.querySelector("input");
+        input.value = String(sl.get());
+        input.addEventListener("input", ev => { ev.stopPropagation(); sl.onInput(Number(input.value)); render(); });
+        input.addEventListener("click", ev => ev.stopPropagation());
+        sw.appendChild(row);
+      }
       const bw = sh.getElementById("btns");
       for (const b of buttons) {
         const el = document.createElement("button");
@@ -642,6 +814,18 @@
         if (!sh) return;
         if (rootEl && !rootEl.isConnected && document.documentElement) document.documentElement.appendChild(rootEl);
         sh.getElementById("pill").hidden = open;
+        const q = f.quick, snd = sh.getElementById("snd");
+        const qk = q ? (q.on ? "1" : "0") + "|" + q.title : "";
+        if (qk !== quickKey) {
+          quickKey = qk;
+          snd.hidden = !q;
+          if (q) {
+            snd.innerHTML = q.on ? ICON_ON : ICON_OFF;
+            snd.classList.toggle("off", !q.on);
+            snd.dataset.on = q.on ? "1" : "0";
+            snd.title = q.title; snd.setAttribute("aria-label", q.title); snd.setAttribute("aria-pressed", q.on ? "true" : "false");
+          }
+        }
         sh.getElementById("box").hidden = !open;
         sh.getElementById("dot").style.background = f.dot || "#9ca3af";
         sh.getElementById("pilltxt").textContent = f.pill || "AD2DC";
@@ -651,6 +835,13 @@
         if (rows.innerHTML !== lines) rows.innerHTML = lines;
         sh.getElementById("hint").textContent = f.hint || "";
         sh.getElementById("err").textContent = f.err ? "B\u0142\u0105d: " + f.err : "";
+        for (const row of sh.getElementById("sliders").children) {
+          const sl = sliders.find(x => x.id === row.dataset.id);
+          if (!sl) continue;
+          row.querySelector(".sl-l").textContent = typeof sl.label === "function" ? sl.label() : sl.label;
+          const input = row.querySelector("input");
+          if (sh.activeElement !== input && input.value !== String(sl.get())) input.value = String(sl.get());
+        }
         for (const el of sh.getElementById("btns").children) {
           const b = buttons.find(x => x.id === el.dataset.id);
           if (b && typeof b.label === "function") el.textContent = b.label();
@@ -660,7 +851,9 @@
     }
     function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 
-    return { set, mount, render, addButton, toggle, showManual, setStrip, get open() { return open; } };
+    // always-visible round button next to the pill (model { on, title }); handler runs on click
+    function setQuick(model, handler) { if (handler) onQuick = handler; set("quick", model); }
+    return { set, mount, render, addButton, addSlider, toggle, showManual, setStrip, setQuick, get open() { return open; } };
   })();
 
   async function copyWithFeedback(btn, text, okLabel) {
@@ -834,7 +1027,7 @@
   function startDartCounter() {
     const tabId = Math.random().toString(36).slice(2, 10);
     const S = {
-      enabled: true, apiBase: CFG.defaultApiBase, doubleOut: true, sendDelay: 0, source: "play", entryMode: "sum",
+      enabled: true, apiBase: CFG.defaultApiBase, doubleOut: true, sendDelay: 0, source: "play", entryMode: "sum", sounds: true, soundVolume: 60,
       playSeen: null, playLive: null, playHb: null, listener: false,
       leader: false,
       apiOk: 0, apiErr: "", apiFails: 0, lastRaw: null, lastRawDarts: null,
@@ -845,6 +1038,14 @@
     };
 
     const tracker = Core.createTracker(onVisit, msg => log(msg));
+    // dart sounds: beside the bridge, never touches the queue or the entry
+    const soundRules = Core.createSoundRules((name, why) => {
+      if (!S.sounds || !S.leader) return;
+      setTimeout(() => {
+        const ok = Sound.play(name, S.soundVolume / 100);
+        log("D\u017awi\u0119k: " + name + " (" + why + ")" + (ok ? "" : ", nie zagra\u0142: " + Sound.state));
+      }, 0);
+    });
 
     // ----- buttons -----
     ui.addButton("toggle", () => (S.enabled ? "Wy\u0142\u0105cz most" : "W\u0142\u0105cz most"), async () => {
@@ -877,6 +1078,26 @@
       await gset(K.entryMode, S.entryMode);
       log("Spos\u00f3b wpisu: " + (S.entryMode === "darts" ? "lotka po lotce (klawiatura \u201esingle\u201d w DartCounter)" : "suma tury"));
     });
+    // speaker button next to the AD2DC pill: one click = sounds on/off, saved with GM_setValue; the click also unlocks audio
+    function soundQuick() {
+      return { on: S.sounds, title: S.sounds ? "D\u017awi\u0119ki lotek: W\u0141 (kliknij, \u017ceby wyciszy\u0107)" : "D\u017awi\u0119ki lotek: WY\u0141 (kliknij, \u017ceby w\u0142\u0105czy\u0107)" };
+    }
+    async function toggleSounds() {
+      S.sounds = !S.sounds;
+      Sound.unlock(); // real click: allowed to start audio
+      if (!S.sounds) Sound.stop();
+      ui.setQuick(soundQuick());
+      await gset(K.sounds, S.sounds);
+      log("D\u017awi\u0119ki lotek: " + (S.sounds ? "W\u0141\u0104CZONE" : "WY\u0141\u0104CZONE"));
+    }
+    ui.addButton("soundtest", "Test d\u017awi\u0119ku", () => {
+      Sound.unlock();
+      setTimeout(() => { if (!Sound.play("cheer", S.soundVolume / 100)) log("Test d\u017awi\u0119ku: " + Sound.state); }, Sound.ready ? 0 : 800);
+    });
+    ui.addSlider("vol", () => "G\u0142o\u015bno\u015b\u0107: " + S.soundVolume + "%", () => S.soundVolume, v => {
+      S.soundVolume = v;
+      clearTimeout(S.volSave); S.volSave = setTimeout(() => gset(K.soundVolume, S.soundVolume), 300);
+    });
     ui.addButton("delay", () => "Op\u00f3\u017anienie: " + S.sendDelay + " s", async () => {
       const steps = [0, 3, 5, 10];
       S.sendDelay = steps[(steps.indexOf(S.sendDelay) + 1) % steps.length];
@@ -892,6 +1113,12 @@
       S.doubleOut = await gget(K.doubleOut, true);
       S.sendDelay = Number(await gget(K.sendDelay, 0)) || 0;
       S.entryMode = (await gget(K.entryMode, "sum")) === "darts" ? "darts" : "sum";
+      S.sounds = (await gget(K.sounds, true)) !== false;
+      ui.setQuick(soundQuick(), () => { toggleSounds(); });
+      { const v = Number(await gget(K.soundVolume, 60)); S.soundVolume = isFinite(v) ? Math.max(0, Math.min(100, v)) : 60; }
+      // autoplay rules: audio starts only after a real user gesture on this page
+      const unlockOnGesture = ev => { if (ev.isTrusted && S.sounds) Sound.unlock(); };
+      for (const ev of ["pointerdown", "mousedown", "click", "keydown", "touchend"]) window.addEventListener(ev, unlockOnGesture, true);
       S.source = (await gget(K.source, "play")) === "local" ? "local" : "play";
       S.playSeen = new Set(((await gget(K.playVisits, [])) || []).map(x => x.id)); // visits from before this page load are not entered
       ui.mount(await gget(K.panelOpen, false));
@@ -1083,6 +1310,7 @@
       }
       S.snap = st;
       tracker.update(st, now());
+      soundRules.update("local", st.darts, true);
       renderStrip();
     }
 
@@ -1100,6 +1328,11 @@
       try {
         S.playHb = await gget(K.playHb, null);
         S.playLive = await gget(K.playLive, null);
+        if (S.source === "play" && S.playLive && S.playLive.ts !== S.playLiveSeenTs) {
+          S.playLiveSeenTs = S.playLive.ts;
+          soundRules.update("gra:" + S.playLive.matchId + "/" + S.playLive.key,
+            (S.playLive.throws || []).map(t => Core.normalizeThrow(t)).filter(Boolean));
+        }
         const list = (await gget(K.playVisits, [])) || [];
         for (const item of list) {
           if (!item || S.playSeen.has(item.id)) continue;
@@ -1460,6 +1693,7 @@
         ["Ostatnia tura", S.lastVisit ? S.lastVisit.labels + " = " + S.lastVisit.total + " (" + hhmmss(S.lastVisit.ts) + ")" : "-"],
         ["Pole wyniku", t ? "znalezione: " + t.how : "BRAK" + (mp.ok ? " (czekam na Twoj\u0105 kolej)" : "")],
         ["Ostatni wpis", S.lastEntry ? S.lastEntry.score + (S.lastEntry.ok ? " \u2713 " : " \u2717 ") + hhmmss(S.lastEntry.ts) + " (" + S.lastEntry.how + ")" : "-"],
+        ["D\u017awi\u0119ki", S.sounds ? "W\u0141, " + S.soundVolume + "%, " + Sound.state : "WY\u0141"],
         ["Wpis", t && t.mode === "darts" ? "lotka po lotce (klawiatura lotek w DartCounter)"
           : t && t.mode === "unsupported" ? "BRAK: " + t.how
           : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],
@@ -1494,7 +1728,7 @@
         "mened\u017cer: " + managerName() + " | GM_*: " + hasGM_ + " | GM.*: " + hasGMdot,
         "przegl\u0105darka: " + navigator.userAgent,
         "adres: " + location.href,
-        "most: " + (S.enabled ? "ON" : "OFF") + " | aktywna karta: " + S.leader + " | double out: " + S.doubleOut + " | wpis: " + S.entryMode,
+        "most: " + (S.enabled ? "ON" : "OFF") + " | aktywna karta: " + S.leader + " | double out: " + S.doubleOut + " | wpis: " + S.entryMode + " | d\u017awi\u0119ki: " + (S.sounds ? S.soundVolume + "% " + Sound.state : "wy\u0142."),
         "API: " + S.apiBase + " | ok: " + (S.apiOk ? hhmmss(S.apiOk) : "nigdy") + " | b\u0142\u0105d: " + (S.apiErr || "-"),
         "\u017ar\u00f3d\u0142o: " + S.source + " | lokalnie: " + S.sourceName + " | karta gry: " + playTabText() + " | listener: " + S.listener,
         "gra teraz: " + safeJson(S.playLive),

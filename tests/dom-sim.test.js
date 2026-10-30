@@ -83,10 +83,30 @@ function makePage(keyboard, opts) {
   if (!store.map.has("ad2dc3_source")) w.GM_setValue("ad2dc3_source", opts.source || "local");
   const api = { state: { status: "throw", event: "takeoutFinished" }, calls: 0 };
   w.GM_info = { scriptHandler: "FakeMonkey", version: "1" };
-  w.GM_xmlhttpRequest = d => { api.calls++; setTimeout(() => d.onload({ status: 200, responseText: JSON.stringify(api.state) }), 5); };
+  // fake WebAudio (3.3.0 dart sounds): which file played, how often a sound was cut, starts "suspended" like a browser
+  const audio = { created: 0, plays: [], stops: 0, volumes: [], fetched: [] };
+  const SOUND_SIZE = { "laugh-2.mp3": 1, "cheer-2.mp3": 2, "boo-3.mp3": 3, "combo-6.mp3": 4 };
+  const SOUND_NAME = { 1: "laugh", 2: "cheer", 3: "boo", 4: "combo" };
+  w.GM_xmlhttpRequest = d => {
+    const m = /\/sounds\/([\w-]+\.mp3)$/.exec(d.url);
+    if (m) { audio.fetched.push(d.url); setTimeout(() => d.onload({ status: 200, response: new ArrayBuffer(SOUND_SIZE[m[1]] || 9) }), 5); return; }
+    api.calls++; setTimeout(() => d.onload({ status: 200, responseText: JSON.stringify(api.state) }), 5);
+  };
+  if (opts.audio) {
+    w.AudioContext = class {
+      constructor() { audio.created++; this.state = "suspended"; this.destination = {}; }
+      resume() { this.state = "running"; return Promise.resolve(); }
+      createBuffer() { return {}; }
+      createBufferSource() {
+        return { buffer: null, connect(n) { return n; }, start() { if (this.buffer && this.buffer.name) audio.plays.push(this.buffer.name); }, stop() { audio.stops++; } };
+      }
+      createGain() { const g = { gain: { value: 1 }, connect(n) { audio.volumes.push(g.gain.value); return n; } }; return g; }
+      decodeAudioData(ab, ok) { setTimeout(() => ok({ name: SOUND_NAME[ab.byteLength] }), 1); }
+    };
+  }
   w.console.log = () => {};
   w.eval(SCRIPT);
-  return { w, doc, game, api, render };
+  return { w, doc, game, api, render, audio, store };
 }
 
 async function playVisit(p, darts) {
@@ -189,10 +209,22 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
   for (const withListener of [true, false]) {
     const tag = "game (" + (withListener ? "listener" : "polling only") + ")";
     const store = makeStore(withListener);
-    const dc = makePage("none", { store, source: "play" });
+    const dc = makePage("none", { store, source: "play", audio: true });
     const play = makePlayPage(store);
     await sleep(1500);
     const { send, seg } = play;
+    const sr0 = dc.doc.getElementById("ad2dc-root").shadowRoot;
+    const snd = sr0.getElementById("snd");
+    check(tag + ": speaker button visible with the panel collapsed, sounds on by default", !snd.hidden && snd.dataset.on === "1" &&
+      snd.querySelector("svg") && sr0.getElementById("box").hidden === true && /W\u0141/.test(snd.title), { hidden: snd.hidden, on: snd.dataset.on, title: snd.title });
+    check(tag + ": no audio context before a user click", dc.audio.created === 0, dc.audio);
+    send(1, []); await sleep(400);
+    sr0.querySelector('#btns [data-id="soundtest"]').click(); await sleep(1300); // user click on "Test dźwięku"
+    check(tag + ": test button unlocks audio, loads 4 files from raw main, plays cheer", dc.audio.created === 1 && dc.audio.fetched.length === 4 &&
+      dc.audio.fetched.every(u => u.startsWith("https://raw.githubusercontent.com/nixuuu/autodarts-dartcounter-bridge/main/sounds/")) && JSON.stringify(dc.audio.plays) === '["cheer"]', dc.audio);
+    const vol = sr0.querySelector('#sliders input[type="range"]');
+    vol.value = "40"; vol.dispatchEvent(new dc.w.Event("input", { bubbles: true })); await sleep(500);
+    check(tag + ": volume slider saved", dc.store.map.get("ad2dc3_sound_volume") === "40", dc.store.map.get("ad2dc3_sound_volume"));
     send(1, []); await sleep(300);
     send(1, [seg(20, 3)]); await sleep(300);
     send(1, [seg(20, 3), seg(4, 1)]); await sleep(300);
@@ -211,9 +243,30 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check(tag + ": repeated frames enter nothing more", dc.game.submitted.length === 2, dc.game);
     send(3, [seg(5, 0), seg(7, 0), seg(9, 0)]); await sleep(300); send(4, []); await sleep(4500);
     check(tag + ": three misses entered as one 0 (real darts)", JSON.stringify(dc.game.submitted) === "[79,60,0]", dc.game);
-    const sr = dc.doc.getElementById("ad2dc-root").shadowRoot;
-    check(tag + ": pill shows version", /3\.2\.1/.test(sr.getElementById("pilltxt").textContent), sr.getElementById("pilltxt").textContent);
-    dc.w.close(); play.w.close();
+    // turn 1: T20 cheer, S4 (later corrected to S18) none, S1 laugh; turn 2: S20 x3 none; turn 3: 3 misses in one frame
+    check(tag + ": sounds per dart: cheer (T20), laugh (S1), boo x3; each new sound cuts the previous one",
+      JSON.stringify(dc.audio.plays) === '["cheer","cheer","laugh","boo","boo","boo"]' && dc.audio.stops >= 4, dc.audio);
+    check(tag + ": sounds at slider volume 40%", dc.audio.volumes[dc.audio.volumes.length - 1] === 0.4, dc.audio.volumes);
+    // combo turn S5, S1, S20: combo at the 3rd dart, no laugh for S1; the bridge still enters 26 once
+    send(4, [seg(5, 1)]); await sleep(400); send(4, [seg(5, 1), seg(1, 1)]); await sleep(400); send(4, [seg(5, 1), seg(1, 1), seg(20, 1)]); await sleep(400);
+    send(5, []); await sleep(4500);
+    check(tag + ": combo S5 S1 S20 -> combo only (no laugh)", JSON.stringify(dc.audio.plays.slice(6)) === '["combo"]', dc.audio.plays);
+    check(tag + ": combo turn entered once (26), entries unchanged", JSON.stringify(dc.game.submitted) === "[79,60,0,26]", dc.game);
+    sr0.getElementById("snd").click(); await sleep(200); // one click on the speaker: sounds off
+    check(tag + ": speaker click -> off icon, saved with GM_setValue", sr0.getElementById("snd").dataset.on === "0" &&
+      sr0.getElementById("snd").classList.contains("off") && dc.store.map.get("ad2dc3_sounds") === "false", dc.store.map.get("ad2dc3_sounds"));
+    send(5, [seg(2, 0)]); await sleep(400); send(5, [seg(2, 0), seg(20, 3)]); await sleep(1500);
+    check(tag + ": sounds off -> miss and T20 silent", dc.audio.plays.length === 7, dc.audio);
+    check(tag + ": pill shows version", /3\.3\.0/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
+    // page reload: a new DartCounter tab with the same userscript storage keeps the muted state
+    dc.w.close(); await sleep(300);
+    const dc2 = makePage("none", { store, source: "play", audio: true });
+    await sleep(1500);
+    const snd2 = dc2.doc.getElementById("ad2dc-root").shadowRoot.getElementById("snd");
+    check(tag + ": after reload the speaker is still off", snd2.dataset.on === "0" && /WY\u0141/.test(snd2.title), { on: snd2.dataset.on, title: snd2.title });
+    snd2.click(); await sleep(200);
+    check(tag + ": after reload one click turns sounds on again and saves it", snd2.dataset.on === "1" && dc2.store.map.get("ad2dc3_sounds") === "true" && dc2.audio.created === 1, dc2.audio);
+    dc2.w.close(); play.w.close();
   }
 
   if (failed) { console.log(failed + " check(s) failed"); process.exit(1); }
