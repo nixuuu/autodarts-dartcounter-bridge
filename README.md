@@ -4,7 +4,7 @@ Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://a
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.2.0**.
+Wersja: **3.2.1**.
 
 ## Instalacja
 
@@ -34,10 +34,15 @@ Karta DartCounter odpytuje `http://127.0.0.1:3180/api/state` (Autodarts Desktop 
 
 W tym trybie lotkę można poprawić w pasku **„Tura:”** nad kółkiem AD2DC: kliknij lotkę, wybierz S/D/T + numer, 25, Bull albo pudło. Przycisk **Opóźnienie** (0/3/5/10 s) daje czas na poprawkę po wyjęciu lotek.
 
-## Sposób wpisu (przycisk „Wpis” w panelu)
+## Sposób wpisu (zależy od klawiatury w DartCounter)
 
-- **Suma tury** (domyślnie) — np. `129`. Działa z polem „Wpisz wynik i naciśnij Enter” albo z klawiaturą z cyframi w DartCounter.
-- **Lotka po lotce** — np. `T20`, `T20`, `S9`. W meczu DartCounter wybierz klawiaturę pojedynczych lotek (Single / Double / Treble). Skrypt klika lotki po kolei, sprawdza każdą, potem zatwierdza turę. Przerzucenie i końcówkę na podwójnej liczy wtedy sam DartCounter (skrypt klika „Potwierdź”). Gdy ta klawiatura nie jest wybrana, skrypt wpisze sumę tury.
+Sposób wpisu wynika z klawiatury wybranej w meczu DartCounter (ikona klawiatury przy polu wyniku):
+
+- **Klawiatura pojedynczych lotek** (Single / Double / Treble + liczby) → **lotka po lotce**, np. `T20`, `T20`, `S9`. Skrypt klika mnożnik i przycisk liczby dla każdej lotki (np. „20” to jeden przycisk 20), sprawdza każdą lotkę, potem zatwierdza turę. Przerzucenie i końcówkę na podwójnej liczy sam DartCounter (skrypt klika „Potwierdź”).
+- **Pole „Wpisz wynik i naciśnij Enter”** albo **klawiatura z cyframi** → **suma tury**, np. `129`.
+- Klawiatura z klikaną tarczą i „hotkeys” nie są obsługiwane: skrypt nic nie wpisuje, pokazuje błąd i czeka z turą (do 2 min), aż wybierzesz jedną z klawiatur powyżej.
+
+Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma pierwszeństwo: przy klawiaturze lotek skrypt zawsze wpisuje lotka po lotce, przy polu tekstowym lub klawiaturze z cyframi — sumę.
 
 ## Mecz w DartCounter
 
@@ -57,6 +62,12 @@ Przyciski: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy sta
 - Nic nie jest wpisywane, gdy nie ma nowych lotek ani gdy lotki zostają w tarczy.
 - Automatyczne 0 tylko przy przerzuceniu odrzuconym przez DartCounter oraz przy końcu bez podwójnej (opcja „Double out”).
 - „Cofnij” w grze Autodarts po wysłaniu tury nie wysyła jej drugi raz — DartCounter trzeba wtedy poprawić ręcznie.
+
+## Gdy coś nie działa
+
+- Panel AD2DC → **Kopiuj log** i dołącz go do zgłoszenia.
+- Przy błędzie wpisu skrypt zapisuje w konsoli przeglądarki jeden czytelny wpis `[AD2DC] BŁĄD wpisu (wersja): …` ze szczegółami (źródło, klawiatura DartCounter, tura).
+- Błędy `Invalid value for <svg> attribute width="1.688rem"` w konsoli pochodzą z kodu DartCounter (ikona lotki na klawiaturze), nie z tego skryptu.
 
 ## Znane ograniczenia
 

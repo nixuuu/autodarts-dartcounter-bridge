@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.2.0
+// @version      3.2.1
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -34,7 +34,7 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.2.0
+ * AD2DC 3.2.1
  *
  * Source "gra" (default): an X01 game open on play.autodarts.com / .io. The script listens to the page's own
  *   WebSocket (channel autodarts.matches, match state, turns[0] = turn in progress). Corrections made in the
@@ -57,6 +57,10 @@
  *   "Single"/"Double"/"Treble" (fixed English text), numbers 1-20 ([dcTypography=bulevar-32]), "Outer 25", "Bull 50",
  *   Miss (class "!uppercase"), Confirm on bust ([dcButton]); DartCounter checks bust/double-out per dart itself.
  *   Entered darts show in app-keyboard-score-input ([dcTypography=bulevar-40]); "button.submit-button" ends the turn.
+ *   3.2.1: the DartCounter keyboard decides how a visit is entered: per-dart keyboard -> dart by dart (also when the
+ *   panel says "suma tury"), text field / number pad (app-numbers-keyboard) -> sum. A sum is never typed into a
+ *   keyboard that cannot take it ("dartboard", "hotkeys"): clear error instead. The file is plain ASCII
+ *   (Polish text as \u escapes), so a wrong charset on install cannot break the log text.
  *
  * Dart correction (3.1.0): the panel shows the darts of the current visit; each one can be changed
  * before the visit is sent (sending happens only after the takeout, optionally after a delay).
@@ -67,7 +71,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.2.0";
+  const VERSION = "3.2.1";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -230,16 +234,16 @@
               visit = fresh(st, now, !pulling);
               if (pulling) {
                 visit.done = true; // connected in the middle of a takeout: darts may be missing already
-                log("Start w trakcie wyjmowania lotek (" + sig(st.darts) + "). Tej tury nie wysyłam, wpisz ją ręcznie.");
+                log("Start w trakcie wyjmowania lotek (" + sig(st.darts) + "). Tej tury nie wysy\u0142am, wpisz j\u0105 r\u0119cznie.");
               } else {
-                log("Start: na tarczy są już lotki tej tury: " + sig(st.darts));
+                log("Start: na tarczy s\u0105 ju\u017c lotki tej tury: " + sig(st.darts));
               }
             }
             return;
           }
 
           if (st.count === 0) {
-            if (visit && !visit.done) finish(visit.pulled ? "lotki wyjęte" : "tarcza pusta");
+            if (visit && !visit.done) finish(visit.pulled ? "lotki wyj\u0119te" : "tarcza pusta");
             visit = null;
             return;
           }
@@ -326,9 +330,9 @@
           if (m.key !== cur.key) {
             if (sent.has(m.matchId + "/" + m.key)) {
               // undo back into a turn that was already sent: send nothing, neither that turn nor the current one
-              log("Autodarts wrócił do tury " + m.key + " (cofnięcie). Ta tura już jest w DartCounter. Nic nie wysyłam, popraw DartCounter ręcznie.");
+              log("Autodarts wr\u00f3ci\u0142 do tury " + m.key + " (cofni\u0119cie). Ta tura ju\u017c jest w DartCounter. Nic nie wysy\u0142am, popraw DartCounter r\u0119cznie.");
             } else {
-              publish(cur, "następna tura");
+              publish(cur, "nast\u0119pna tura");
             }
             cur = m;
           } else if (!m.darts.length && cur.darts.length >= 2) {
@@ -352,8 +356,8 @@
       for (const d of darts) {
         rest -= d.score;
         if (rest === 0) {
-          if (!doubleOut || d.multiplier === 2) return { score: remaining, total, note: "zakończenie" };
-          return { score: 0, total, note: "koniec bez podwójnej = przerzucenie" };
+          if (!doubleOut || d.multiplier === 2) return { score: remaining, total, note: "zako\u0144czenie" };
+          return { score: 0, total, note: "koniec bez podw\u00f3jnej = przerzucenie" };
         }
         if (reliable && (rest < 0 || (doubleOut && rest === 1))) return { score: 0, total, note: "przerzucenie (reszta " + remaining + ")" };
         if (rest < 0) break; // not reliable: DartCounter validates busts itself
@@ -419,21 +423,21 @@
     try {
       if (hasGM_) return GM_getValue(k, d);
       if (hasGMdot) return await GM.getValue(k, d);
-    } catch (e) { log("BŁĄD odczytu pamięci skryptu: " + errText(e)); }
+    } catch (e) { log("B\u0141\u0104D odczytu pami\u0119ci skryptu: " + errText(e)); }
     return d;
   }
   async function gset(k, v) {
     try {
       if (typeof GM_setValue === "function") return GM_setValue(k, v);
       if (typeof GM !== "undefined" && GM && typeof GM.setValue === "function") return await GM.setValue(k, v);
-    } catch (e) { log("BŁĄD zapisu pamięci skryptu: " + errText(e)); }
+    } catch (e) { log("B\u0141\u0104D zapisu pami\u0119ci skryptu: " + errText(e)); }
   }
   function gxhr(url, timeout) {
     return new Promise((resolve, reject) => {
       const d = {
         method: "GET", url, timeout, nocache: true,
         onload: r => resolve({ status: r.status, text: r.responseText }),
-        onerror: e => reject(new Error((e && (e.error || e.statusText)) || "brak połączenia")),
+        onerror: e => reject(new Error((e && (e.error || e.statusText)) || "brak po\u0142\u0105czenia")),
         ontimeout: () => reject(new Error("przekroczony czas")),
         onabort: () => reject(new Error("przerwane"))
       };
@@ -442,12 +446,12 @@
         else if (typeof GM !== "undefined" && GM && typeof GM.xmlHttpRequest === "function") {
           const p = GM.xmlHttpRequest(d);
           if (p && typeof p.catch === "function") p.catch(e => reject(e instanceof Error ? e : new Error(errText(e))));
-        } else reject(new Error("menedżer skryptów nie ma GM_xmlhttpRequest"));
+        } else reject(new Error("mened\u017cer skrypt\u00f3w nie ma GM_xmlhttpRequest"));
       } catch (e) { reject(e); }
     });
   }
   function errText(e) {
-    if (!e) return "nieznany błąd";
+    if (!e) return "nieznany b\u0142\u0105d";
     if (typeof e === "string") return e;
     return e.message || e.error || e.statusText || safeJson(e);
   }
@@ -543,7 +547,7 @@
 <div class="strip" id="strip" hidden></div>
 <div class="pill" id="pill"><span class="dot" id="dot"></span><span id="pilltxt">AD2DC</span></div>
 <div class="box" id="box" hidden>
-  <div class="row"><b>AD2DC ${VERSION}</b> · ${role} · <span id="mgr"></span></div>
+  <div class="row"><b>AD2DC ${VERSION}</b> \u00b7 ${role} \u00b7 <span id="mgr"></span></div>
   <div id="rows"></div>
   <div class="hint" id="hint"></div>
   <div class="err" id="err"></div>
@@ -581,7 +585,7 @@
       for (const b of buttons) {
         const el = document.createElement("button");
         el.type = "button"; el.dataset.id = b.id; el.textContent = typeof b.label === "function" ? b.label() : b.label;
-        el.addEventListener("click", async ev => { ev.stopPropagation(); try { await b.fn(el); } catch (e) { log("BŁĄD przycisku: " + errText(e)); } render(); });
+        el.addEventListener("click", async ev => { ev.stopPropagation(); try { await b.fn(el); } catch (e) { log("B\u0141\u0104D przycisku: " + errText(e)); } render(); });
         bw.appendChild(el);
       }
       document.documentElement.appendChild(rootEl);
@@ -607,7 +611,7 @@
       el.hidden = !m;
       if (!m) { el.innerHTML = ""; return; }
       el.innerHTML = `<span class="t">${esc(m.title)}</span>` + m.slots.map((x, i) =>
-        `<button type="button" class="chip${x && x.edited ? " ed" : ""}" data-slot="${i}" title="Kliknij, żeby poprawić">${esc(x ? x.label : "–")}</button>`).join("") +
+        `<button type="button" class="chip${x && x.edited ? " ed" : ""}" data-slot="${i}" title="Kliknij, \u017ceby poprawi\u0107">${esc(x ? x.label : "\u2013")}</button>`).join("") +
         (m.note ? `<span class="t">${esc(m.note)}</span>` : "");
     }
     function renderPicker() {
@@ -619,10 +623,10 @@
       let nums = "";
       for (let n = 1; n <= 20; n++) nums += `<button type="button" data-n="${n}">${n}</button>`;
       el.innerHTML = `<div>Lotka ${pickSlot + 1}: wybierz pole</div>` +
-        `<div class="mrow">${mb(1, "S pojedyncze")}${mb(2, "D podwójne")}${mb(3, "T potrójne")}</div>` +
+        `<div class="mrow">${mb(1, "S pojedyncze")}${mb(2, "D podw\u00f3jne")}${mb(3, "T potr\u00f3jne")}</div>` +
         `<div class="grid">${nums}</div>` +
-        `<div class="xrow"><button type="button" data-x="25">25</button><button type="button" data-x="BULL">Bull 50</button><button type="button" data-x="M">Pudło</button></div>` +
-        `<div class="xrow"><button type="button" data-x="auto">Jak AutoDarts</button><button type="button" data-x="del">Usuń lotkę</button><button type="button" data-x="close">Zamknij</button></div>`;
+        `<div class="xrow"><button type="button" data-x="25">25</button><button type="button" data-x="BULL">Bull 50</button><button type="button" data-x="M">Pud\u0142o</button></div>` +
+        `<div class="xrow"><button type="button" data-x="auto">Jak AutoDarts</button><button type="button" data-x="del">Usu\u0144 lotk\u0119</button><button type="button" data-x="close">Zamknij</button></div>`;
     }
     function showManual(text) {
       if (!sh) return;
@@ -646,7 +650,7 @@
         const lines = (f.rows || []).map(([k, v]) => `<div class="row"><b>${esc(k)}:</b> ${esc(v)}</div>`).join("");
         if (rows.innerHTML !== lines) rows.innerHTML = lines;
         sh.getElementById("hint").textContent = f.hint || "";
-        sh.getElementById("err").textContent = f.err ? "Błąd: " + f.err : "";
+        sh.getElementById("err").textContent = f.err ? "B\u0142\u0105d: " + f.err : "";
         for (const el of sh.getElementById("btns").children) {
           const b = buttons.find(x => x.id === el.dataset.id);
           if (b && typeof b.label === "function") el.textContent = b.label();
@@ -662,9 +666,9 @@
   async function copyWithFeedback(btn, text, okLabel) {
     const ok = await copyText(text);
     if (ok) {
-      const old = btn.textContent; btn.textContent = okLabel || "Skopiowano ✓";
+      const old = btn.textContent; btn.textContent = okLabel || "Skopiowano \u2713";
       setTimeout(() => { btn.textContent = old; ui.render(); }, 1500);
-      log("Skopiowano do schowka (" + text.length + " znaków)");
+      log("Skopiowano do schowka (" + text.length + " znak\u00f3w)");
     } else {
       ui.showManual(text);
       log("Schowek zablokowany: zaznacz tekst w polu i skopiuj (Cmd+C)");
@@ -678,7 +682,7 @@
     let ok = 0, lastErr = "", lastRaw = null, seq = 0;
     ui.addButton("raw", "Kopiuj surowy stan", btn => copyWithFeedback(btn, safeJson(lastRaw, true)));
     ui.addButton("copylog", "Kopiuj log", btn => copyWithFeedback(btn, logBuf.map(x => x.line).join("\n")));
-    ui.addButton("close", "Zwiń", () => ui.toggle(false));
+    ui.addButton("close", "Zwi\u0144", () => ui.toggle(false));
     let panelOpenPref = false;
     gget(K.panelOpen, false).then(v => { panelOpenPref = v; });
 
@@ -689,18 +693,18 @@
           if (!r.ok) throw new Error("HTTP " + r.status);
           lastRaw = await r.json();
           await gset(K.relay, { ts: now(), seq: ++seq, origin: location.origin, raw: lastRaw });
-          if (!ok) { ui.mount(panelOpenPref); log("Przekaźnik: /api/state działa na " + location.origin); }
+          if (!ok) { ui.mount(panelOpenPref); log("Przeka\u017anik: /api/state dzia\u0142a na " + location.origin); }
           ok = now(); lastErr = "";
           const st = Core.normalizeState(lastRaw);
           ui.set("dot", "#22c55e");
-          ui.set("pill", "AD2DC przekaźnik ✓");
+          ui.set("pill", "AD2DC przeka\u017anik \u2713");
           ui.set("rows", [["/api/state", "OK " + location.origin], ["stan", st ? (st.status || "-") + " / lotek: " + st.count : "-"],
             ["lotki", st && st.count ? st.darts.map(d => d.label).join(" ") : "-"]]);
           ui.set("hint", "Ta karta jest tylko zapasowa. Wynik wpisuje karta DartCounter.");
           ui.set("err", "");
         } catch (e) {
           const m = errText(e);
-          if (m !== lastErr) log("Przekaźnik: brak /api/state na " + location.origin + ": " + m);
+          if (m !== lastErr) log("Przeka\u017anik: brak /api/state na " + location.origin + ": " + m);
           lastErr = m; ok = 0;
           ui.set("dot", "#9ca3af");
           ui.set("pill", "AD2DC (brak /api/state)");
@@ -722,7 +726,7 @@
 
     ui.addButton("raw", "Kopiuj surowy stan", btn => copyWithFeedback(btn, safeJson(st.lastRaw, true)));
     ui.addButton("copylog", "Kopiuj log", btn => copyWithFeedback(btn, "AD2DC " + VERSION + " (karta gry) " + location.href + "\n" + logBuf.map(x => x.line).join("\n")));
-    ui.addButton("close", "Zwiń", () => ui.toggle(false));
+    ui.addButton("close", "Zwi\u0144", () => ui.toggle(false));
 
     function onFrame(text, via) {
       let m; try { m = JSON.parse(text); } catch (_) { return; }
@@ -760,10 +764,10 @@
           const ws = protocols !== undefined ? new Native(url, protocols) : new Native(url);
           try {
             if (/autodarts/.test(String(url))) {
-              log("Podsłuch WebSocket: " + String(url).split("?")[0]);
+              log("Pods\u0142uch WebSocket: " + String(url).split("?")[0]);
               ws.addEventListener("message", ev => { if (typeof ev.data === "string") onFrame(ev.data, "unsafeWindow"); });
             }
-          } catch (e) { log("BŁĄD podsłuchu: " + errText(e)); }
+          } catch (e) { log("B\u0141\u0104D pods\u0142uchu: " + errText(e)); }
           return ws;
         };
         Wrapped.prototype = Native.prototype;
@@ -771,7 +775,7 @@
         Wrapped.__ad2dc = true;
         W.WebSocket = Wrapped;
       }
-    } catch (e) { st.hookErr = errText(e); log("Podsłuch przez unsafeWindow nie działa: " + st.hookErr); }
+    } catch (e) { st.hookErr = errText(e); log("Pods\u0142uch przez unsafeWindow nie dzia\u0142a: " + st.hookErr); }
 
     // 2) same hook as a page script (in case unsafeWindow is not the page world); frames come back via postMessage
     window.addEventListener("message", ev => {
@@ -798,7 +802,7 @@
       sc.textContent = code;
       (document.head || document.documentElement).appendChild(sc);
       sc.remove();
-    } catch (e) { log("Skrypt strony nie wstrzyknięty: " + errText(e)); }
+    } catch (e) { log("Skrypt strony nie wstrzykni\u0119ty: " + errText(e)); }
 
     gget(K.panelOpen, false).then(v => ui.mount(v));
     log("Start " + VERSION + " na karcie gry " + location.pathname + " (" + managerName() + ")");
@@ -814,13 +818,13 @@
         ["Stan meczu", st.frames ? "OK (" + age + ", " + Object.keys(st.via).join(" + ") + ")" : "brak"],
         ["Mecz", m ? (m.variant || "?") + ", runda " + m.round + ", gracz " + (m.playerName || m.player) : "-"],
         ["Lotki teraz", m && m.darts.length ? m.darts.map(d => d.label).join(" ") + " = " + m.darts.reduce((a, d) => a + d.score, 0) : "-"],
-        ["Wysłane tury", String(st.published) + (st.lastVisit ? " (ostatnia: " + st.lastVisit.labels + ")" : "")]
+        ["Wys\u0142ane tury", String(st.published) + (st.lastVisit ? " (ostatnia: " + st.lastVisit.labels + ")" : "")]
       ]);
-      ui.set("hint", st.frames ? "Wynik idzie do DartCounter po zakończeniu tury (wyjęcie lotek / następna tura)."
-        : onMatch ? "Nie widzę stanu meczu. Odśwież tę kartę (Cmd+R) i rzuć lotkę." : "Otwórz grę X01 w Autodarts.");
+      ui.set("hint", st.frames ? "Wynik idzie do DartCounter po zako\u0144czeniu tury (wyj\u0119cie lotek / nast\u0119pna tura)."
+        : onMatch ? "Nie widz\u0119 stanu meczu. Od\u015bwie\u017c t\u0119 kart\u0119 (Cmd+R) i rzu\u0107 lotk\u0119." : "Otw\u00f3rz gr\u0119 X01 w Autodarts.");
       ui.set("err", m && m.variant && !/x01/i.test(m.variant) ? "To nie jest gra X01 (" + m.variant + ")." : "");
       ui.set("dot", st.frames ? "#22c55e" : onMatch ? "#ef4444" : "#f59e0b");
-      ui.set("pill", "AD2DC " + VERSION + (st.frames ? " gra ✓" + (st.published ? " " + st.published : "") : onMatch ? " brak stanu" : " gra"));
+      ui.set("pill", "AD2DC " + VERSION + (st.frames ? " gra \u2713" + (st.published ? " " + st.published : "") : onMatch ? " brak stanu" : " gra"));
     }
   }
 
@@ -843,19 +847,19 @@
     const tracker = Core.createTracker(onVisit, msg => log(msg));
 
     // ----- buttons -----
-    ui.addButton("toggle", () => (S.enabled ? "Wyłącz most" : "Włącz most"), async () => {
+    ui.addButton("toggle", () => (S.enabled ? "Wy\u0142\u0105cz most" : "W\u0142\u0105cz most"), async () => {
       S.enabled = !S.enabled; await gset(K.enabled, S.enabled);
       if (!S.enabled) S.queue.length = 0;
       tracker.reset();
-      log("Most " + (S.enabled ? "WŁĄCZONY" : "WYŁĄCZONY"));
+      log("Most " + (S.enabled ? "W\u0141\u0104CZONY" : "WY\u0141\u0104CZONY"));
     });
-    ui.addButton("source", () => "Źródło: " + (S.source === "play" ? "gra Autodarts" : "lokalne /api/state"), async () => {
+    ui.addButton("source", () => "\u0179r\u00f3d\u0142o: " + (S.source === "play" ? "gra Autodarts" : "lokalne /api/state"), async () => {
       S.source = S.source === "play" ? "local" : "play";
       await gset(K.source, S.source);
       tracker.reset();
       // turns the game tab published before the switch were not for this source: never enter them
       if (S.source === "play") ((await gget(K.playVisits, [])) || []).forEach(x => S.playSeen.add(x.id));
-      log("Źródło lotek: " + (S.source === "play" ? "gra X01 na play.autodarts (karta gry)" : "lokalne /api/state (127.0.0.1)"));
+      log("\u0179r\u00f3d\u0142o lotek: " + (S.source === "play" ? "gra X01 na play.autodarts (karta gry)" : "lokalne /api/state (127.0.0.1)"));
     });
     ui.addButton("copylog", "Kopiuj log", btn => copyWithFeedback(btn, buildReport()));
     ui.addButton("raw", "Kopiuj surowy stan", btn => copyWithFeedback(btn,
@@ -863,7 +867,7 @@
     ui.addButton("api", "Adres API", async () => {
       const v = prompt("Adres Autodarts (bez /api/state):", S.apiBase);
       if (v && /^https?:\/\/[^/]+$/i.test(v.trim())) { S.apiBase = v.trim(); await gset(K.apiBase, S.apiBase); log("Nowy adres API: " + S.apiBase); }
-      else if (v) log("Zły adres: " + v + " (przykład: http://127.0.0.1:3180)");
+      else if (v) log("Z\u0142y adres: " + v + " (przyk\u0142ad: http://127.0.0.1:3180)");
     });
     ui.addButton("dbl", () => "Double out: " + (S.doubleOut ? "TAK" : "NIE"), async () => {
       S.doubleOut = !S.doubleOut; await gset(K.doubleOut, S.doubleOut); log("Double out: " + (S.doubleOut ? "TAK" : "NIE"));
@@ -871,15 +875,15 @@
     ui.addButton("entry", () => "Wpis: " + (S.entryMode === "darts" ? "lotka po lotce" : "suma tury"), async () => {
       S.entryMode = S.entryMode === "darts" ? "sum" : "darts";
       await gset(K.entryMode, S.entryMode);
-      log("Sposób wpisu: " + (S.entryMode === "darts" ? "lotka po lotce (klawiatura „single” w DartCounter)" : "suma tury"));
+      log("Spos\u00f3b wpisu: " + (S.entryMode === "darts" ? "lotka po lotce (klawiatura \u201esingle\u201d w DartCounter)" : "suma tury"));
     });
-    ui.addButton("delay", () => "Opóźnienie: " + S.sendDelay + " s", async () => {
+    ui.addButton("delay", () => "Op\u00f3\u017anienie: " + S.sendDelay + " s", async () => {
       const steps = [0, 3, 5, 10];
       S.sendDelay = steps[(steps.indexOf(S.sendDelay) + 1) % steps.length];
       await gset(K.sendDelay, S.sendDelay);
-      log("Opóźnienie wysyłki po wyjęciu lotek: " + S.sendDelay + " s");
+      log("Op\u00f3\u017anienie wysy\u0142ki po wyj\u0119ciu lotek: " + S.sendDelay + " s");
     });
-    ui.addButton("close", "Zwiń", () => ui.toggle(false));
+    ui.addButton("close", "Zwi\u0144", () => ui.toggle(false));
 
     // ----- boot -----
     (async () => {
@@ -905,7 +909,7 @@
       const p = location.pathname;
       if (/^\/game\/match\b/.test(p)) return { ok: true, text: "TAK (mecz X01 lokalny)" };
       if (/^\/(online-game|local-tournament-game)\/match\b/.test(p)) return { ok: true, text: "TAK (mecz X01 online/turniej)" };
-      if (/^\/game\//.test(p)) return { ok: false, text: "NIE (to inna gra niż X01: " + p + ")" };
+      if (/^\/game\//.test(p)) return { ok: false, text: "NIE (to inna gra ni\u017c X01: " + p + ")" };
       return { ok: false, text: "NIE (" + p + ")" };
     }
     function visible(el) {
@@ -924,11 +928,11 @@
       return Array.from(document.querySelectorAll("app-darts-for-throwout-dialog")).some(visible);
     }
     function keyboardSetting() {
-      try { return localStorage.getItem("inGameKeyboard") || "(domyślna: none na www)"; } catch (_) { return "?"; }
+      try { return localStorage.getItem("inGameKeyboard") || "(domy\u015blna: none na www)"; } catch (_) { return "?"; }
     }
 
     const PLACEHOLDER_RE = /wpisz wynik|enter (a )?score|punktzahl|score|wynik|puntuaci|punteggio|pontua|punten|pisteet/i;
-    const SUBMIT_RE = /^(wyślij|wyslij|submit|senden|s|ok|enter|envoyer|enviar|invia|verzenden|potwierdź|zatwierdź|absenden)$/i;
+    const SUBMIT_RE = /^(wy\u015blij|wyslij|submit|senden|s|ok|enter|envoyer|enviar|invia|verzenden|potwierd\u017a|zatwierd\u017a|absenden)$/i;
 
     function submitButtonNear(el) {
       let p = el.parentElement;
@@ -951,10 +955,15 @@
       let i = inputs.find(x => x.maxLength === 3 && (x.inputMode === "numeric" || x.getAttribute("inputmode") === "numeric"));
       if (i) return { mode: "input", input: i, how: "pole numeryczne maxlength=3" };
       i = inputs.find(x => PLACEHOLDER_RE.test(x.placeholder || "") && submitButtonNear(x));
-      if (i) return { mode: "input", input: i, how: "pole z placeholderem i przyciskiem wysyłki" };
-      if (hosts.length) return { mode: "keys", host: hosts[0], how: "klawiatura numeryczna (klawisze)" };
+      if (i) return { mode: "input", input: i, how: "pole z placeholderem i przyciskiem wysy\u0142ki" };
+      if (hosts.length) {
+        if (singleKb()) return { mode: "darts", host: hosts[0], how: "klawiatura lotek (Single/Double/Treble)" };
+        if (numbersKb() || keyboardSetting() === "numbers") return { mode: "keys", host: hosts[0], how: "klawiatura numeryczna (klawisze)" };
+        return { mode: "unsupported", host: hosts[0], how: "klawiatura \u201e" + keyboardSetting() + "\u201d (nieobs\u0142ugiwana)" };
+      }
       return null;
     }
+    function numbersKb() { return Array.from(document.querySelectorAll("app-numbers-keyboard")).some(visible); }
 
     function setNativeValue(el, v) {
       const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -1006,10 +1015,10 @@
         if (!findTarget()) return { ok: true, how: "kolej przeciwnika" };
         if (!clickedSubmit && t.mode === "input" && now() > end - CFG.verifyMs + 600 && t.input.isConnected && t.input.value === String(score)) {
           const b = submitButtonNear(t.input);
-          if (b) { clickedSubmit = true; log("Enter nie zadziałał, klikam przycisk wysyłki"); b.click(); }
+          if (b) { clickedSubmit = true; log("Enter nie zadzia\u0142a\u0142, klikam przycisk wysy\u0142ki"); b.click(); }
         }
       }
-      if (score === 0) return { ok: true, how: "0 wysłane (bez zmiany wyniku, nie da się potwierdzić)" };
+      if (score === 0) return { ok: true, how: "0 wys\u0142ane (bez zmiany wyniku, nie da si\u0119 potwierdzi\u0107)" };
       return { ok: false, how: "brak zmiany wyniku" };
     }
 
@@ -1044,13 +1053,13 @@
         const r = await gxhr(S.apiBase + "/api/state", CFG.xhrTimeoutMs);
         if (r.status !== 200) throw new Error("HTTP " + r.status);
         raw = JSON.parse(r.text);
-        if (!S.apiOk || S.apiErr) log("Połączenie z " + S.apiBase + "/api/state OK");
+        if (!S.apiOk || S.apiErr) log("Po\u0142\u0105czenie z " + S.apiBase + "/api/state OK");
         S.apiOk = now(); S.apiErr = ""; S.apiFails = 0;
-        src = "bezpośrednio " + S.apiBase.replace(/^https?:\/\//, "") + "/api/state";
+        src = "bezpo\u015brednio " + S.apiBase.replace(/^https?:\/\//, "") + "/api/state";
       } catch (e) {
         const m = errText(e);
         S.apiFails++;
-        if (m !== S.apiErr) log("Brak połączenia z " + S.apiBase + "/api/state: " + m);
+        if (m !== S.apiErr) log("Brak po\u0142\u0105czenia z " + S.apiBase + "/api/state: " + m);
         S.apiErr = m;
       }
       if (!raw && now() - S.apiOk > CFG.sourceStaleMs) {
@@ -1062,15 +1071,15 @@
         }
       }
       if (!raw) { S.sourceName = "-"; return; }
-      if (src !== S.sourceName) { log("Źródło lotek: " + src); S.sourceName = src; }
+      if (src !== S.sourceName) { log("\u0179r\u00f3d\u0142o lotek: " + src); S.sourceName = src; }
       S.lastRaw = raw;
       const st = Core.normalizeState(raw);
       if (!st) return;
       if (st.count) S.lastRawDarts = raw;
-      if (st.throwsMissing && !S.warnedMissing) { S.warnedMissing = true; log("API podaje numThrows, ale bez listy lotek. Kliknij „Kopiuj surowy stan” i wyślij."); }
+      if (st.throwsMissing && !S.warnedMissing) { S.warnedMissing = true; log("API podaje numThrows, ale bez listy lotek. Kliknij \u201eKopiuj surowy stan\u201d i wy\u015blij."); }
       if (st.unknown && st.count) {
         const sig = st.darts.map(d => d.label).join(" ");
-        if (sig !== S.warnedUnknown) { S.warnedUnknown = sig; log("Nie rozumiem formatu lotki. Kliknij „Kopiuj surowy stan” i wyślij.", raw.throws || raw.darts); }
+        if (sig !== S.warnedUnknown) { S.warnedUnknown = sig; log("Nie rozumiem formatu lotki. Kliknij \u201eKopiuj surowy stan\u201d i wy\u015blij.", raw.throws || raw.darts); }
       }
       S.snap = st;
       tracker.update(st, now());
@@ -1080,7 +1089,7 @@
     // ----- source "gra": visits published by the play.autodarts game tab -----
     async function playLoop() {
       if (typeof GM_addValueChangeListener === "function") {
-        try { GM_addValueChangeListener(K.playVisits, () => { checkPlay(); }); S.listener = true; } catch (e) { log("GM_addValueChangeListener nie działa: " + errText(e)); }
+        try { GM_addValueChangeListener(K.playVisits, () => { checkPlay(); }); S.listener = true; } catch (e) { log("GM_addValueChangeListener nie dzia\u0142a: " + errText(e)); }
       }
       for (;;) { await checkPlay(); await sleep(300); } // polling as well: the listener is not guaranteed between tabs
     }
@@ -1097,7 +1106,7 @@
           if (!S.leader) continue; // another DartCounter tab enters it (shared id list prevents doubles)
           S.playSeen.add(item.id);
           if (!S.enabled || S.source !== "play") continue; // bridge off or other source: never entered later
-          if (now() - item.ts > 60000) { log("Pomijam starą turę z gry: " + item.labels); continue; }
+          if (now() - item.ts > 60000) { log("Pomijam star\u0105 tur\u0119 z gry: " + item.labels); continue; }
           const darts = (item.throws || []).map(t => { const d = Core.normalizeThrow(t); if (d) d.raw = t; return d; }).filter(Boolean);
           log("Z gry Autodarts: " + item.labels + " (" + item.reason + ", id " + item.id + ")" +
             (item.busted ? " | Autodarts: przerzucenie" : "") + (item.points != null ? " | punkty Autodarts: " + item.points : ""));
@@ -1111,9 +1120,9 @@
       const labels = v.darts.map(d => d.label).join(" ");
       const total = v.darts.reduce((a, d) => a + d.score, 0);
       S.lastVisit = { labels, total, ts: now() };
-      log("Tura: " + labels + " = " + total + " (" + v.reason + ")" + (v.extraDarts ? " UWAGA: więcej niż 3 lotki, liczę 3" : ""));
-      if (v.darts.some(d => !d.ok)) { setErr("Nie rozpoznano lotki (" + labels + "). Tury nie wpisuję. Kliknij „Kopiuj surowy stan”."); return; }
-      if (!S.enabled) { log("Most wyłączony, tury nie wpisuję"); return; }
+      log("Tura: " + labels + " = " + total + " (" + v.reason + ")" + (v.extraDarts ? " UWAGA: wi\u0119cej ni\u017c 3 lotki, licz\u0119 3" : ""));
+      if (v.darts.some(d => !d.ok)) { setErr("Nie rozpoznano lotki (" + labels + "). Tury nie wpisuj\u0119. Kliknij \u201eKopiuj surowy stan\u201d."); return; }
+      if (!S.enabled) { log("Most wy\u0142\u0105czony, tury nie wpisuj\u0119"); return; }
       if (!v.darts.length) return; // never enter anything without new darts
       const last = await gget(K.lastEntered, null);
       const entered = (await gget(K.enteredIds, [])) || [];
@@ -1122,7 +1131,7 @@
       if (!/^gra:/.test(v.id) && last && last.labels === labels && now() - last.ts < CFG.dupWindowMs) { log("Pomijam duplikat tej samej tury (" + labels + ")"); return; }
       S.queue.push({ darts: v.darts, labels, total, ts: now(), id: v.id, detected: v.detected || v.darts, ov: v.ov || {},
         corrected: !!v.corrected, readyAt: now() + S.sendDelay * 1000 });
-      if (v.corrected) log("Tura z korektą: AutoDarts " + (v.detected || []).map(d => d.label).join(" ") + " → wysyłam " + labels);
+      if (v.corrected) log("Tura z korekt\u0105: AutoDarts " + (v.detected || []).map(d => d.label).join(" ") + " \u2192 wysy\u0142am " + labels);
       renderStrip();
     }
 
@@ -1132,7 +1141,7 @@
         await sleep(200);
         if (!S.queue.length || S.busy || !S.leader) continue;
         const v = S.queue[0];
-        if (now() - v.ts > CFG.visitMaxAgeMs) { S.queue.shift(); setErr("Tura " + v.labels + " czekała za długo, nie wpisana."); continue; }
+        if (now() - v.ts > CFG.visitMaxAgeMs) { S.queue.shift(); setErr("Tura " + v.labels + " czeka\u0142a za d\u0142ugo, nie wpisana."); continue; }
         if (now() < v.readyAt) { renderStrip(); continue; } // time to correct darts after the takeout
         if (!matchPage().ok && !findTarget()) {
           S.queue.shift();
@@ -1144,12 +1153,21 @@
           continue;
         }
         const t = findTarget();
+        if (t && t.mode === "unsupported") {
+          // wait (up to visitMaxAgeMs) until the player switches to a keyboard that can take the visit
+          if (waitingLogged !== v.id + "kb") {
+            waitingLogged = v.id + "kb";
+            setErr("Czekam z tur\u0105 " + v.labels + ": " + t.how + ". Wybierz w DartCounter klawiatur\u0119 Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d.",
+              { tura: v.labels, klawiatura: keyboardSetting() });
+          }
+          continue;
+        }
         if (!t) {
           if (waitingLogged !== v.id + "t") { waitingLogged = v.id + "t"; log("Czekam na pole wyniku (np. rzuca DartBot)"); }
           continue;
         }
         S.busy = true; renderStrip();
-        try { await enterVisit(v, t); } catch (e) { setErr("Wpis nie wyszedł: " + errText(e)); }
+        try { await enterVisit(v, t); } catch (e) { setErr("Wpis nie wyszed\u0142: " + errText(e)); }
         S.queue.shift();
         S.busy = false; renderStrip();
       }
@@ -1167,7 +1185,11 @@
 
     // ----- per-dart entry (DartCounter keyboard "single") -----
     const btnText = b => (b.textContent || "").replace(/\s+/g, " ").trim();
-    function singleKb() { return Array.from(document.querySelectorAll("app-single-dart-keyboard")).find(visible) || null; }
+    // the per-dart keyboard with S/D/T and number buttons (keyboard "single"; "dartboard" has no number buttons)
+    function singleKb() {
+      return Array.from(document.querySelectorAll("app-single-dart-keyboard")).find(kb =>
+        Array.from(kb.querySelectorAll('[dctypography="bulevar-32"]')).filter(visible).length >= 20) || null;
+    }
     function scoreHost() { return Array.from(document.querySelectorAll("app-keyboard-score-input")).find(visible) || null; }
     function kbButtons(kb) { return Array.from(kb.querySelectorAll("button")).filter(visible); }
     function bustConfirm(kb) { return kb ? kbButtons(kb).find(b => b.hasAttribute("dcbutton")) || null : null; }
@@ -1183,14 +1205,36 @@
       if (d.number === 25) return d.multiplier === 2 ? "D25" : "S25";
       return ["", "S", "D", "T"][d.multiplier] + d.number;
     }
-    function dartButtons(kb, d) {
+    // one button per dart field: "20" is the number button 20 (never the digits 2 and 0)
+    function multButton(kb, m) { return kbButtons(kb).find(b => btnText(b).toLowerCase() === ["", "single", "double", "treble"][m]) || null; }
+    function numberButton(kb, n) {
+      return kbButtons(kb).find(b => { const x = b.querySelector('[dctypography="bulevar-32"]'); return x && btnText(x) === String(n); }) || null;
+    }
+    function singleButton(kb, d) {
       const bs = kbButtons(kb);
-      if (d.multiplier === 0) return [bs.find(b => b.classList.contains("!uppercase") && !b.hasAttribute("dcbutton"))];
-      if (d.number === 25 && d.multiplier === 2) return [bs.find(b => /bull/i.test(btnText(b)) && /50/.test(btnText(b)))];
-      if (d.number === 25) return [bs.find(b => /outer/i.test(btnText(b)) && /25/.test(btnText(b)))];
-      const mult = bs.find(b => btnText(b).toLowerCase() === ["", "single", "double", "treble"][d.multiplier]);
-      const num = bs.find(b => { const n = b.querySelector('[dctypography="bulevar-32"]'); return n && btnText(n) === String(d.number); });
-      return [mult, num];
+      if (d.multiplier === 0) return bs.find(b => b.classList.contains("!uppercase") && !b.hasAttribute("dcbutton")) || null;
+      if (d.number === 25 && d.multiplier === 2) return bs.find(b => /bull/i.test(btnText(b)) && /50/.test(btnText(b))) || null;
+      if (d.number === 25) return bs.find(b => /outer/i.test(btnText(b)) && /25/.test(btnText(b))) || null;
+      return null;
+    }
+    // Clicks one dart: Miss / Outer 25 / Bull 50 directly; 1-20: multiplier first, then the number button,
+    // looked up again after the multiplier click (DartCounter may redraw the buttons).
+    async function clickDart(d) {
+      const kb = singleKb();
+      if (!kb) return "brak klawiatury lotek";
+      if (d.multiplier === 0 || d.number === 25) {
+        const b = singleButton(kb, d);
+        if (!b) return "brak przycisku " + d.label;
+        b.click(); return "";
+      }
+      const m = multButton(kb, d.multiplier);
+      if (!m) return "brak przycisku mno\u017cnika dla " + d.label;
+      m.click(); await sleep(40);
+      let kb2 = singleKb(), m2 = kb2 && multButton(kb2, d.multiplier);
+      if (m2 && !m2.classList.contains("selectedMultiplier")) { m2.click(); await sleep(60); kb2 = singleKb(); }
+      const num = kb2 && numberButton(kb2, d.number);
+      if (!num) return "brak przycisku " + d.number;
+      num.click(); return "";
     }
     async function waitFor(fn, ms) {
       const end = now() + ms;
@@ -1200,18 +1244,18 @@
     // Clicks the darts one by one. Never clicks "Submit" when no dart of this visit is entered.
     async function enterDarts(v) {
       const host0 = scoreHost();
-      if (!singleKb() || !host0) return { ok: false, aborted: true, how: "brak klawiatury lotek „single” w DartCounter" };
+      if (!singleKb() || !host0) return { ok: false, aborted: true, how: "brak klawiatury lotek \u201esingle\u201d w DartCounter" };
       const pre = enteredSlots(host0).length;
-      if (pre > 0) return { ok: false, aborted: true, how: "w DartCounter są już wpisane lotki tej tury (" + pre + "). Dokończ je ręcznie" };
+      if (pre > 0) return { ok: false, aborted: true, how: "w DartCounter s\u0105 ju\u017c wpisane lotki tej tury (" + pre + "). Doko\u0144cz je r\u0119cznie" };
       const remBefore = readRemaining().join(",");
       let n = 0, stop = "";
       for (const d of v.darts) {
         const kb = singleKb();
-        if (!kb) { stop = "tura zakończona przez DartCounter"; break; }
-        if (bustConfirm(kb)) { stop = "DartCounter zgłosił przerzucenie"; break; }
-        const bs = dartButtons(kb, d);
-        if (bs.some(b => !b)) return { ok: false, aborted: true, how: "nie znalazłem przycisku dla " + d.label + " (wpisane lotki: " + n + ")" };
-        for (const b of bs) { b.click(); await sleep(40); }
+        if (!kb) { stop = "tura zako\u0144czona przez DartCounter"; break; }
+        if (bustConfirm(kb)) { stop = "DartCounter zg\u0142osi\u0142 przerzucenie"; break; }
+        const miss = await clickDart(d);
+        if (miss) return { ok: false, aborted: true, how: miss + " (wpisane lotki: " + n + ")" };
+        await sleep(40);
         n++;
         const r = await waitFor(() => {
           const h = scoreHost(), k = singleKb();
@@ -1222,22 +1266,22 @@
           if (slots.length === 0 && readRemaining().join(",") !== remBefore) return "end";
           return null;
         }, 1500);
-        if (!r) return { ok: false, aborted: true, how: "DartCounter nie przyjął lotki " + n + " (" + d.label + ")" };
+        if (!r) return { ok: false, aborted: true, how: "DartCounter nie przyj\u0105\u0142 lotki " + n + " (" + d.label + ")" };
         if (r === "ok") {
           const got = enteredSlots(scoreHost())[n - 1] || "";
           const exp = expectedSlotLabel(d);
           const fine = exp ? got.replace(/\s+/g, "").toUpperCase() === exp : !/\d/.test(got);
-          if (!fine) return { ok: false, aborted: true, how: "lotka " + n + ": DartCounter pokazuje „" + got + "” zamiast " + d.label + ". Popraw ręcznie" };
-          log("Lotka " + n + ": " + d.label + " ✓");
-        } else { log("Lotka " + n + ": " + d.label + " ✓ (" + (r === "bust" ? "DartCounter: przerzucenie / zła końcówka" : "DartCounter zamknął turę") + ")"); break; }
+          if (!fine) return { ok: false, aborted: true, how: "lotka " + n + ": DartCounter pokazuje \u201e" + got + "\u201d zamiast " + d.label + ". Popraw r\u0119cznie" };
+          log("Lotka " + n + ": " + d.label + " \u2713");
+        } else { log("Lotka " + n + ": " + d.label + " \u2713 (" + (r === "bust" ? "DartCounter: przerzucenie / z\u0142a ko\u0144c\u00f3wka" : "DartCounter zamkn\u0105\u0142 tur\u0119") + ")"); break; }
       }
-      if (stop) log("Dalsze lotki pominięte: " + stop);
+      if (stop) log("Dalsze lotki pomini\u0119te: " + stop);
       const kb = singleKb();
       const confirm = bustConfirm(kb);
-      if (confirm) { log("Potwierdzam w DartCounter (przerzucenie / zła końcówka)"); confirm.click(); }
+      if (confirm) { log("Potwierdzam w DartCounter (przerzucenie / z\u0142a ko\u0144c\u00f3wka)"); confirm.click(); }
       else if (kb && enteredSlots(scoreHost()).length > 0) {
         const sub = scoreHost().querySelector("button.submit-button");
-        if (!sub) return { ok: false, aborted: true, how: "brak przycisku wysyłki tury" };
+        if (!sub) return { ok: false, aborted: true, how: "brak przycisku wysy\u0142ki tury" };
         sub.click();
       }
       const done = await waitFor(() => {
@@ -1247,24 +1291,31 @@
         if (enteredSlots(h).length === 0 && !bustConfirm(k)) return "tura zatwierdzona";
         return null;
       }, CFG.verifyMs);
-      return done ? { ok: true, how: n + " lotk" + (n === 1 ? "a" : n < 5 ? "i" : "ek") + ", " + done } : { ok: false, aborted: true, how: "tura nie została zatwierdzona w DartCounter" };
+      return done ? { ok: true, how: n + " lotk" + (n === 1 ? "a" : n < 5 ? "i" : "ek") + ", " + done } : { ok: false, aborted: true, how: "tura nie zosta\u0142a zatwierdzona w DartCounter" };
     }
 
     async function enterVisit(v, t) {
-      if (S.entryMode === "darts") {
+      if (t.mode === "unsupported") {
+        setErr("Nic nie wpisano: " + t.how + ". W DartCounter wybierz klawiatur\u0119 Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d.",
+          { tura: v.labels, klawiatura: keyboardSetting() });
+        S.lastEntry = { score: v.labels, labels: v.labels, ok: false, how: t.how, ts: now() };
+        return;
+      }
+      if (t.mode === "darts" && S.entryMode !== "darts") log("DartCounter ma klawiatur\u0119 lotek: wpisuj\u0119 lotka po lotce.");
+      if (S.entryMode === "darts" || t.mode === "darts") {
         if (singleKb()) {
           await gset(K.lastEntered, { id: v.id, labels: v.labels, ts: now() });
           const entered = (await gget(K.enteredIds, [])) || [];
           entered.push(v.id); while (entered.length > 50) entered.shift();
           await gset(K.enteredIds, entered);
-          log("Wpisuję lotka po lotce: " + v.labels + (v.corrected ? " (lotki poprawione ręcznie)" : ""));
+          log("Wpisuj\u0119 lotka po lotce: " + v.labels + (v.corrected ? " (lotki poprawione r\u0119cznie)" : ""));
           const res = await enterDarts(v);
           S.lastEntry = { score: v.labels, labels: v.labels, ok: res.ok, how: res.how, ts: now() };
-          if (res.ok) { log("Wpisano lotki " + v.labels + " ✓ (" + res.how + ")"); S.err = ""; }
-          else setErr("Wpis lotek " + v.labels + " przerwany: " + res.how);
+          if (res.ok) { log("Wpisano lotki " + v.labels + " \u2713 (" + res.how + ")"); S.err = ""; }
+          else setErr("Wpis lotek " + v.labels + " przerwany: " + res.how, { tura: v.labels, klawiatura: keyboardSetting(), wpisaneLotki: enteredSlots(scoreHost()) });
           return;
         }
-        log("Tryb „lotka po lotce”, ale DartCounter nie ma klawiatury „single” (" + keyboardSetting() + "). Wpisuję sumę tury.");
+        log("Tryb \u201elotka po lotce\u201d, ale DartCounter nie ma klawiatury \u201esingle\u201d (" + keyboardSetting() + "). Wpisuj\u0119 sum\u0119 tury.");
       }
       const cur = currentRemaining();
       const d = Core.decideScore(v.darts, cur.rem, cur.reliable, S.doubleOut);
@@ -1273,7 +1324,7 @@
       const entered = (await gget(K.enteredIds, [])) || [];
       entered.push(v.id); while (entered.length > 50) entered.shift();
       await gset(K.enteredIds, entered);
-      log("Wpisuję " + d.score + (v.corrected ? " (lotki poprawione ręcznie: " + v.labels + ")" : "") + " (" + t.how + ")");
+      log("Wpisuj\u0119 " + d.score + (v.corrected ? " (lotki poprawione r\u0119cznie: " + v.labels + ")" : "") + " (" + t.how + ")");
       let res = await enterAndVerify(t, d.score);
       let score = d.score;
       if (!res.ok && d.score > 0) {
@@ -1285,19 +1336,27 @@
         await sleep(1000);
         const t2 = findTarget();
         if (bust && t2 && readRemaining().join(",") === r.join(",") && !dialogOpen()) {
-          log("DartCounter nie przyjął " + d.score + " (przerzucenie, reszta " + cand.join("/") + "). Wpisuję 0 za tę turę.");
+          log("DartCounter nie przyj\u0105\u0142 " + d.score + " (przerzucenie, reszta " + cand.join("/") + "). Wpisuj\u0119 0 za t\u0119 tur\u0119.");
           res = await enterAndVerify(t2, 0); score = 0;
         } else {
-          log("DartCounter nie przyjął " + d.score + ". Nic więcej nie wpisuję.");
+          log("DartCounter nie przyj\u0105\u0142 " + d.score + ". Nic wi\u0119cej nie wpisuj\u0119.");
         }
       }
       if (res.ok && score === 0 && cur.idx != null) S.lastChangedIdx = cur.idx;
       S.lastEntry = { score, labels: v.labels, ok: res.ok, how: res.how, ts: now() };
-      if (res.ok) { log("Wpisano " + score + " ✓ (" + res.how + ")"); S.err = ""; }
-      else setErr("Wpis " + score + " nie zadziałał (" + res.how + "). Klawiatura w DartCounter: " + keyboardSetting());
+      if (res.ok) { log("Wpisano " + score + " \u2713 (" + res.how + ")"); S.err = ""; }
+      else setErr("Wpis " + score + " nie zadzia\u0142a\u0142 (" + res.how + "). Klawiatura w DartCounter: " + keyboardSetting(),
+        { tura: v.labels, wynik: score, sposob: t.how, reszta: readRemaining() });
     }
 
-    function setErr(m) { S.err = m; log("BŁĄD: " + m); }
+    // errors: panel + log + one readable console.warn with the details
+    function setErr(m, details) {
+      S.err = m; log("B\u0141\u0104D: " + m);
+      try {
+        console.warn(PREFIX + " B\u0141\u0104D wpisu (" + VERSION + "): " + m, Object.assign({
+          zrodlo: S.source, wpis: S.entryMode, klawiaturaDC: keyboardSetting(), strona: location.pathname }, details || {}));
+      } catch (_) {}
+    }
 
     // ----- whose turn: remember which player's rest changed last -----
     function watchRemaining() {
@@ -1312,7 +1371,7 @@
 
     // ----- dart correction (strip above the panel) -----
     function slotView(d, edited) {
-      return d ? { label: d.label, edited: !!edited, mult: d.multiplier, num: d.number } : (edited ? { label: "✕", edited: true, mult: 1, num: null } : null);
+      return d ? { label: d.label, edited: !!edited, mult: d.multiplier, num: d.number } : (edited ? { label: "\u2715", edited: true, mult: 1, num: null } : null);
     }
     function renderStrip() {
       if (!S.enabled || !S.leader) { ui.setStrip(null, onPick); return; }
@@ -1320,7 +1379,7 @@
       if (q) {
         const slots = [0, 1, 2].map(i => Object.prototype.hasOwnProperty.call(q.ov, i) ? slotView(q.ov[i], true) : slotView(q.detected[i], false));
         const left = Math.ceil((q.readyAt - now()) / 1000);
-        const title = S.busy ? "Wysyłam:" : left > 0 ? "Wysyłka za " + left + " s:" : "Czeka na pole wyniku:";
+        const title = S.busy ? "Wysy\u0142am:" : left > 0 ? "Wysy\u0142ka za " + left + " s:" : "Czeka na pole wyniku:";
         ui.setStrip({ title, slots, note: "= " + q.total }, onPick);
         return;
       }
@@ -1342,23 +1401,23 @@
     }
     function onPick(slot, choice) {
       const dart = choice === "auto" ? undefined : choice === "del" ? null : Core.normalizeThrow(choice);
-      if (dart && !dart.ok) { log("Zła wartość korekty: " + choice); return; }
-      const what = dart === undefined ? "jak AutoDarts" : dart === null ? "usunięta" : dart.label;
+      if (dart && !dart.ok) { log("Z\u0142a warto\u015b\u0107 korekty: " + choice); return; }
+      const what = dart === undefined ? "jak AutoDarts" : dart === null ? "usuni\u0119ta" : dart.label;
       const q = S.queue[0];
       if (q) {
-        if (S.busy) { log("Za późno na korektę: tura jest właśnie wpisywana"); return; }
+        if (S.busy) { log("Za p\u00f3\u017ano na korekt\u0119: tura jest w\u0142a\u015bnie wpisywana"); return; }
         if (dart === undefined) delete q.ov[slot]; else q.ov[slot] = dart;
         q.darts = Core.applyOverrides(q.detected, q.ov);
         q.labels = q.darts.map(d => d.label).join(" ");
         q.total = q.darts.reduce((a, d) => a + d.score, 0);
         q.corrected = Object.keys(q.ov).length > 0;
-        if (!q.darts.length) { S.queue.shift(); log("Korekta usunęła wszystkie lotki: tury nie wpisuję"); }
-        else log("Korekta lotki " + (slot + 1) + ": " + what + " → tura " + q.labels + " = " + q.total);
+        if (!q.darts.length) { S.queue.shift(); log("Korekta usun\u0119\u0142a wszystkie lotki: tury nie wpisuj\u0119"); }
+        else log("Korekta lotki " + (slot + 1) + ": " + what + " \u2192 tura " + q.labels + " = " + q.total);
       } else if (S.source === "play") {
-        log("Tura jeszcze trwa w grze Autodarts: popraw lotkę w grze (kliknij lotkę na karcie gry). Wynik pójdzie po poprawce.");
+        log("Tura jeszcze trwa w grze Autodarts: popraw lotk\u0119 w grze (kliknij lotk\u0119 na karcie gry). Wynik p\u00f3jdzie po poprawce.");
       } else if (tracker.setOverride(slot, dart)) {
         const darts = tracker.openDarts() || [];
-        log("Korekta lotki " + (slot + 1) + ": " + what + " → tura " + darts.map(d => d.label).join(" ") + " = " + darts.reduce((a, d) => a + d.score, 0));
+        log("Korekta lotki " + (slot + 1) + ": " + what + " \u2192 tura " + darts.map(d => d.label).join(" ") + " = " + darts.reduce((a, d) => a + d.score, 0));
       } else {
         log("Brak tury do poprawienia");
       }
@@ -1367,9 +1426,9 @@
 
     function playTabFresh() { return !!(S.playHb && now() - S.playHb.ts < 5000); }
     function playTabText() {
-      if (!playTabFresh()) return "BRAK (otwórz grę X01 na play.autodarts.com w drugiej karcie)";
+      if (!playTabFresh()) return "BRAK (otw\u00f3rz gr\u0119 X01 na play.autodarts.com w drugiej karcie)";
       const h = S.playHb;
-      return h.frames ? "OK, stan meczu odbierany (" + h.path + ")" : "otwarta, ale bez stanu meczu: odśwież kartę gry (" + h.path + ")";
+      return h.frames ? "OK, stan meczu odbierany (" + h.path + ")" : "otwarta, ale bez stanu meczu: od\u015bwie\u017c kart\u0119 gry (" + h.path + ")";
     }
 
     // ----- panel -----
@@ -1379,47 +1438,51 @@
       const t = findTarget();
       S.target = t;
       const apiAge = S.apiOk ? ((now() - S.apiOk) / 1000).toFixed(1) + " s temu" : "nigdy";
-      const apiTxt = S.apiErr ? "BŁĄD: " + S.apiErr : "OK (" + apiAge + ")";
+      const apiTxt = S.apiErr ? "B\u0141\u0104D: " + S.apiErr : "OK (" + apiAge + ")";
       const st = S.snap;
       const old = document.getElementById("ad2dc-bridge-toggle") || document.getElementById("ad2dc-overlay");
       const rows = [
         ["Wersja", VERSION],
-        ["Most", S.enabled ? (S.leader ? "WŁĄCZONY" : "WŁĄCZONY, inna karta aktywna") : "WYŁĄCZONY"],
+        ["Most", S.enabled ? (S.leader ? "W\u0141\u0104CZONY" : "W\u0141\u0104CZONY, inna karta aktywna") : "WY\u0141\u0104CZONY"],
         ["Strona meczu", mp.text],
         ...(S.source === "play" ? [
-          ["Źródło", "gra Autodarts (karta play.autodarts)"],
+          ["\u0179r\u00f3d\u0142o", "gra Autodarts (karta play.autodarts)"],
           ["Karta gry", playTabText()],
           ["Lotki w grze", S.playLive && S.playLive.throws && S.playLive.throws.length
             ? S.playLive.throws.map(t => (Core.normalizeThrow(t) || { label: "?" }).label).join(" ") + " (runda " + S.playLive.round + ")" : "-"],
           ["Przekaz", S.listener ? "listener + odpytywanie" : "odpytywanie"]
         ] : [
-          ["Źródło", "lokalne: " + S.sourceName],
+          ["\u0179r\u00f3d\u0142o", "lokalne: " + S.sourceName],
           ["API " + S.apiBase.replace(/^https?:\/\//, ""), apiTxt],
           ["Stan tarczy", st ? (st.status || "-") + (st.event ? " / " + st.event : "") : "-"],
           ["Lotki teraz", st && st.count ? st.darts.map(d => d.label).join(" ") + " = " + st.darts.reduce((a, d) => a + d.score, 0) : "-"]
         ]),
         ["Ostatnia tura", S.lastVisit ? S.lastVisit.labels + " = " + S.lastVisit.total + " (" + hhmmss(S.lastVisit.ts) + ")" : "-"],
-        ["Pole wyniku", t ? "znalezione: " + t.how : "BRAK" + (mp.ok ? " (czekam na Twoją kolej)" : "")],
-        ["Ostatni wpis", S.lastEntry ? S.lastEntry.score + (S.lastEntry.ok ? " ✓ " : " ✗ ") + hhmmss(S.lastEntry.ts) + " (" + S.lastEntry.how + ")" : "-"],
-        ["Wpis", S.entryMode === "darts" ? "lotka po lotce (klawiatura „single”: " + (singleKb() ? "TAK" : "NIE") + ")" : "suma tury"],
+        ["Pole wyniku", t ? "znalezione: " + t.how : "BRAK" + (mp.ok ? " (czekam na Twoj\u0105 kolej)" : "")],
+        ["Ostatni wpis", S.lastEntry ? S.lastEntry.score + (S.lastEntry.ok ? " \u2713 " : " \u2717 ") + hhmmss(S.lastEntry.ts) + " (" + S.lastEntry.how + ")" : "-"],
+        ["Wpis", t && t.mode === "darts" ? "lotka po lotce (klawiatura lotek w DartCounter)"
+          : t && t.mode === "unsupported" ? "BRAK: " + t.how
+          : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],
         ["Kolejka", String(S.queue.length)]
       ];
       ui.set("rows", rows);
       const kb = keyboardSetting();
       ui.set("hint", !mp.ok
-        ? "Uruchom mecz X01: Graj lokalnie → Mecz (X01) → Start. Adres meczu: app.dartcounter.net/game/match"
+        ? "Uruchom mecz X01: Graj lokalnie \u2192 Mecz (X01) \u2192 Start. Adres meczu: app.dartcounter.net/game/match"
+        : t && t.mode === "unsupported"
+          ? "Ta klawiatura DartCounter nie jest obs\u0142ugiwana (" + kb + "). Wybierz Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d."
         : S.entryMode === "darts"
-          ? (kb !== "single" ? "Wpis lotka po lotce: w DartCounter wybierz klawiaturę pojedynczych lotek (Single/Double/Treble). Teraz: " + kb + "." : "")
-          : /^(single|dartboard|hotkeys|omni)$/.test(kb)
-            ? "Klawiatura w DartCounter: " + kb + ". Zmień ją na pole „Wpisz wynik” albo klawiaturę z cyframi."
+          ? (!singleKb() ? "Wpis lotka po lotce: w DartCounter wybierz klawiatur\u0119 pojedynczych lotek (Single/Double/Treble). Teraz: " + kb + "." : "")
+          : /^(dartboard|hotkeys|omni)$/.test(kb)
+            ? "Klawiatura w DartCounter: " + kb + ". Zmie\u0144 j\u0105 na pole \u201eWpisz wynik\u201d albo klawiatur\u0119 z cyframi."
             : "");
-      ui.set("err", old ? "Działa też stary skrypt AD2DC. Wyłącz go w menedżerze skryptów." : S.err);
-      let dot = "#22c55e", pill = "AD2DC " + VERSION + " ✓";
-      if (!S.enabled) { dot = "#9ca3af"; pill = "AD2DC " + VERSION + " wył."; }
-      else if (S.err || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + " błąd"; }
-      else if (S.source === "play" && !playTabFresh()) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otwórz grę Autodarts"; }
-      else if (!mp.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otwórz mecz X01"; }
-      else if (S.lastEntry) pill = "AD2DC " + VERSION + " ✓ " + S.lastEntry.score;
+      ui.set("err", old ? "Dzia\u0142a te\u017c stary skrypt AD2DC. Wy\u0142\u0105cz go w mened\u017cerze skrypt\u00f3w." : S.err);
+      let dot = "#22c55e", pill = "AD2DC " + VERSION + " \u2713";
+      if (!S.enabled) { dot = "#9ca3af"; pill = "AD2DC " + VERSION + " wy\u0142."; }
+      else if (S.err || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + " b\u0142\u0105d"; }
+      else if (S.source === "play" && !playTabFresh()) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz gr\u0119 Autodarts"; }
+      else if (!mp.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz mecz X01"; }
+      else if (S.lastEntry) pill = "AD2DC " + VERSION + " \u2713 " + S.lastEntry.score;
       ui.set("dot", dot);
       ui.set("pill", pill);
     }
@@ -1428,18 +1491,18 @@
       const st = S.snap;
       return [
         "AD2DC " + VERSION + " raport " + new Date().toISOString(),
-        "menedżer: " + managerName() + " | GM_*: " + hasGM_ + " | GM.*: " + hasGMdot,
-        "przeglądarka: " + navigator.userAgent,
+        "mened\u017cer: " + managerName() + " | GM_*: " + hasGM_ + " | GM.*: " + hasGMdot,
+        "przegl\u0105darka: " + navigator.userAgent,
         "adres: " + location.href,
         "most: " + (S.enabled ? "ON" : "OFF") + " | aktywna karta: " + S.leader + " | double out: " + S.doubleOut + " | wpis: " + S.entryMode,
-        "API: " + S.apiBase + " | ok: " + (S.apiOk ? hhmmss(S.apiOk) : "nigdy") + " | błąd: " + (S.apiErr || "-"),
-        "źródło: " + S.source + " | lokalnie: " + S.sourceName + " | karta gry: " + playTabText() + " | listener: " + S.listener,
+        "API: " + S.apiBase + " | ok: " + (S.apiOk ? hhmmss(S.apiOk) : "nigdy") + " | b\u0142\u0105d: " + (S.apiErr || "-"),
+        "\u017ar\u00f3d\u0142o: " + S.source + " | lokalnie: " + S.sourceName + " | karta gry: " + playTabText() + " | listener: " + S.listener,
         "gra teraz: " + safeJson(S.playLive),
         "stan: " + (st ? st.status + " / " + st.event + " / lotek " + st.count : "-"),
         "pole wyniku: " + (S.target ? S.target.how : "brak") + " | klawiatura DC: " + keyboardSetting(),
         "reszta graczy: " + safeJson(readRemaining()) + " | ostatnio zmieniony: " + S.lastChangedIdx,
         "ostatni wpis: " + safeJson(S.lastEntry),
-        "błąd: " + (S.err || "-"),
+        "b\u0142\u0105d: " + (S.err || "-"),
         "--- log ---",
         ...logBuf.map(x => x.line),
         "--- ostatni stan z lotkami ---",

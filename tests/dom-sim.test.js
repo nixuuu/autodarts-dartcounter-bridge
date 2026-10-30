@@ -48,7 +48,7 @@ function makePage(keyboard, opts) {
     if (!(score <= 180 && score >= 0 && (score <= r - 2 || score === r))) { game.rejected.push(score); return; }
     game.submitted.push(score);
     game.rest[0] -= score; render();
-    // DartBot turn: component removed, bot scores 45, component back
+    // DartBot turn: component removed, DartBot scores 45, component back
     removeKb();
     setTimeout(() => { game.rest[1] -= 45; render(); addKb(); }, 900);
   }
@@ -96,7 +96,7 @@ async function playVisit(p, darts) {
   for (let i = 0; i < 4; i++) { p.api.state = { status: "takeoutInProgress", event: "takeoutStarted", throws: acc.slice() }; await sleep(400); }
   p.api.state = { status: "takeoutInProgress", event: "takeoutStarted" }; await sleep(400);
   p.api.state = { status: "throw", event: "takeoutFinished" };
-  await sleep(6500); // bot turn + verification (+ possible 0 for a bust)
+  await sleep(6500); // DartBot turn + verification (+ possible 0 for a bust)
 }
 
 function makePlayPage(store) {
@@ -212,7 +212,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     send(3, [seg(5, 0), seg(7, 0), seg(9, 0)]); await sleep(300); send(4, []); await sleep(4500);
     check(tag + ": three misses entered as one 0 (real darts)", JSON.stringify(dc.game.submitted) === "[79,60,0]", dc.game);
     const sr = dc.doc.getElementById("ad2dc-root").shadowRoot;
-    check(tag + ": pill shows version", /3\.2\.0/.test(sr.getElementById("pilltxt").textContent), sr.getElementById("pilltxt").textContent);
+    check(tag + ": pill shows version", /3\.2\.1/.test(sr.getElementById("pilltxt").textContent), sr.getElementById("pilltxt").textContent);
     dc.w.close(); play.w.close();
   }
 
