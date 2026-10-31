@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.5.1
+
+- Fix: the script now answers DartCounter's darts dialog itself ("Darts used on a double" / "Darts used for checkout"). DartCounter opens it after a checkout, after a bust, and after a visit that leaves 50 or less.
+  - Checkout darts: which dart of the visit finished (1-3).
+  - Darts at a double: darts thrown while the rest was 50 or an even 2-40 (DartCounter's rule).
+  - Works with per-dart and sum entry. A dialog the script did not cause waits for the player, with a clear panel message.
+- Fix: a visit is never lost silently any more. Before, the unanswered dialog stopped the queue and the next visits were dropped after 120 s ("script stopped working").
+  - Time while DartCounter asks does not count toward the limit.
+  - An entry that left no trace in DartCounter is tried again (up to 3 times).
+  - A visit that cannot be entered is listed in the panel ("Niewpisane tury", red dot) and in the console until "Wyczyść niewpisane".
+- New: Reset Autodarts. When a DartCounter leg or match ends, the Autodarts game tab starts fresh at the X01 start score.
+  - Panel setting: every leg end (default), only a lost leg, match end, or off.
+  - What it does: a finished leg goes to the next leg, a leg in progress restarts. Otherwise it starts a new match with the same settings and moves the tab to it. It uses the Autodarts app's own API with the app's own login.
+  - A turn in progress goes to DartCounter first. Visits after a reset get new ids, so they are not taken for duplicates.
+  - The result is shown in the panel; a failure shows a clear message.
+- The page scripts on the Autodarts game tab are injected even when the userscript starts before `<html>` exists.
+
 ## 3.5.0
 
 - Around the Clock: an Autodarts ATC game (or the local board) is entered into DartCounter's Around the Clock dart by dart: a hit on the current target (S, D or T key) or Miss, then the turn is submitted.

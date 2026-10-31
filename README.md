@@ -120,13 +120,43 @@ Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Z
 
 - Graj lokalnie → Mecz (X01) → Start. Adres strony: `app.dartcounter.net/game/match`.
 - Gdy grasz z DartBotem, wpis czeka, aż DartBot skończy.
-- Po zamknięciu lega DartCounter pyta o liczbę lotek — odpowiedz ręcznie.
+- Okno DartCountera „Darts used on a double” / „Darts used for checkout” (po zakończeniu lega, po przerzuceniu albo gdy zostaje ≤ 50) skrypt wypełnia sam (od 3.5.1):
+  - lotki na zakończenie: którą lotką tury padło zakończenie (1–3),
+  - lotki na podwójnej: ile lotek tury poleciało, gdy reszta wynosiła 50 albo parzystą liczbę 2–40 (tak liczy DartCounter).
+  - Jeśli skrypt nie zna reszty, wpisuje przybliżenie i zaznacza to w logu. Okna, którego skrypt nie otworzył swoim wpisem, nie rusza: panel prosi o odpowiedź, a kolejne tury czekają i wpisują się potem.
+
+## Reset gry w Autodarts (od 3.5.1)
+
+Gdy w DartCounterze kończy się leg (albo cały mecz), karta gry Autodarts od razu zaczyna X01 od początkowego wyniku. Dzięki temu gra w Autodarts nie kończy tur ani lega wcześniej niż DartCounter.
+
+Przycisk **„Reset Autodarts”** w panelu przełącza tryb:
+
+| Ustawienie | Kiedy reset |
+|---|---|
+| koniec każdego lega (domyślnie) | każdy koniec lega i meczu w DartCounterze |
+| tylko po przegranym legu | gdy leg (albo mecz) wygrał przeciwnik |
+| koniec meczu | tylko gdy DartCounter pokaże koniec meczu |
+| wyłączony | nigdy |
+
+Jak to działa:
+
+- DartCounter: koniec lega = wszystkie reszty wracają do wyniku startowego, a ktoś miał wcześniej ≤ 170. Koniec meczu = ekran końca meczu. Leg jest wygrany, jeśli zakończyła go Twoja tura (np. okno z lotkami na zakończenie).
+- Karta gry Autodarts (musi być otwarta, źródło „gra Autodarts”) robi to, co przyciski Autodarts, przez API gry z logowaniem samej strony. Skrypt nie zapisuje żadnych haseł ani tokenów.
+  - Leg w Autodarts już skończony → następny leg.
+  - Leg w toku → leg od nowa (`games/restart`).
+  - Gdy to nie zadziała albo mecz w Autodarts jest skończony → nowy mecz z tymi samymi ustawieniami (przy niedokończonym meczu poprzedni jest przerywany). Karta przechodzi do nowego meczu.
+- Lotki tury w toku nigdy nie przepadają. Gdy w Autodarts są już lotki nowej tury, reset czeka, aż ta tura trafi do DartCountera.
+- Tury po resecie dostają nowe ID, więc nie są odrzucane jako duplikaty.
+- Gdy reset się nie uda (brak karty gry, brak logowania, Autodarts odmówi), panel DartCountera pokazuje czerwony komunikat. Wtedy zacznij nową grę X01 w Autodarts ręcznie. Tury dalej się wpisują.
+- Najmniej kroków daje gra w Autodarts z wyłączonym „Match mode” (bez legów i setów): mecz nigdy nie kończy się sam.
 
 ## Panel AD2DC
 
 Małe kółko w prawym dolnym rogu (kliknij, żeby rozwinąć). Kolor kropki: zielony = działa, żółty = otwórz mecz / grę, czerwony = błąd, szary = most wyłączony.
 
-Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test fajerwerków, Test dźwięku, suwak Głośność, Opóźnienie, Zwiń. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
+Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test fajerwerków, Test dźwięku, suwak Głośność, Reset Autodarts, Wyczyść niewpisane, Opóźnienie, Zwiń.
+
+Wiersz **„Niewpisane tury”** (od 3.5.1) pokazuje każdą turę, której nie udało się wpisać, z powodem. Kropka jest wtedy czerwona, a kółko pokazuje „niewpisane: N”. Takie tury wpisz ręcznie, potem kliknij „Wyczyść niewpisane”. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
 
 ## Zasady wpisu
 
@@ -134,6 +164,7 @@ Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski
 - Nic nie jest wpisywane, gdy nie ma nowych lotek ani gdy lotki zostają w tarczy.
 - Automatyczne 0 tylko przy przerzuceniu odrzuconym przez DartCounter oraz przy końcu bez podwójnej (opcja „Double out”).
 - „Cofnij” w grze Autodarts po wysłaniu tury nie wysyła jej drugi raz — DartCounter trzeba wtedy poprawić ręcznie.
+- Żadna tura nie znika po cichu. Wpis, który nie zostawił śladu w DartCounterze, jest powtarzany (do 3 prób). Czas, gdy DartCounter pyta o lotki, nie liczy się do limitu 120 s. Tura, której nie da się wpisać, trafia na listę „Niewpisane tury”.
 
 ## Gdy coś nie działa
 
@@ -149,6 +180,7 @@ Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski
 - Klawiatura DartCounter z klikaną tarczą („dartboard”) nie jest obsługiwana w trybie lotka po lotce.
 - Przy źródle lokalnym w Autodarts v2+ lokalne API może zależeć od wersji Board Managera.
 - Around the Clock: obsługiwany tylko wariant 1 → 20 + bull (patrz sekcja „Around the Clock”); klawiatura DartCounter z klikaną tarczą i Omni nie są obsługiwane.
+- Reset Autodarts korzysta z API gry Autodarts (te same wywołania co aplikacja). Nie dało się go sprawdzić na prawdziwym koncie: przetestowany jest na atrapach stron i w silnikach WebKit/Chromium. „Leg od nowa” (`games/restart`) to wywołanie, którego aplikacja Autodarts sama nie używa. Gdy serwer go nie przyjmie, skrypt zakłada nowy mecz.
 - Dźwięki wymagają jednego kliknięcia na stronie DartCounter po jej otwarciu (zasady autoodtwarzania) oraz dostępu do `raw.githubusercontent.com`.
 
 ## Testy
@@ -158,7 +190,7 @@ npm install
 npm test
 ```
 
-Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50, ustawienia i przyciski Around the Clock) oraz symulacje stron (jsdom): DartCounter X01 (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika), DartCounter Around the Clock i karta gry Autodarts.
+Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50, ustawienia i przyciski Around the Clock) oraz symulacje stron (jsdom): DartCounter X01 (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika), okno lotek DartCountera (zakończenie 1, 2 i 3 lotkami, przerzucenie, kolejka po oknie), koniec lega i meczu z poleceniem resetu, DartCounter Around the Clock i karta gry Autodarts (reset: następny leg, leg od nowa, nowy mecz, tura w toku, błędy).
 
 ## Licencja
 

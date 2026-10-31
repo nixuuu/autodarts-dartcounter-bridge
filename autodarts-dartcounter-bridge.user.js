@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.5.0
+// @version      3.5.1
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,17 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.5.0
+ * AD2DC 3.5.1
+ *
+ * 3.5.1: DartCounter's dialog "Darts used on a double" / "Darts used for checkout" (it opens after a checkout,
+ *   a bust or a visit that leaves <= 50) is answered from the darts of the visit (checkout dart = 1-3, darts at a
+ *   double = darts thrown while the rest was 50 or an even 2-40). Before, the open dialog stopped the queue and the
+ *   next visits were dropped after 120 s. Now: time while DartCounter asks does not count, failed entries with no trace
+ *   in DartCounter are tried again (3 times), and a visit that cannot be entered stays on the panel ("Niewpisane tury").
+ *   Reset Autodarts: when a DartCounter leg / match ends (setting: every leg end (default), only a lost leg, match end,
+ *   off) the Autodarts game tab starts fresh at the X01 start score: leg over -> next leg, leg in progress -> leg
+ *   restart, else a new match with the same settings (the app's own API with the app's own login, nothing stored).
+ *   A turn in progress goes to DartCounter first; visits after a reset get new ids (never dropped as duplicates).
  *
  * Around the Clock (3.5.0): an Autodarts ATC game (or the local board) goes to DartCounter's Around the Clock
  *   (/game/around-the-clock) dart by dart on its hit keyboard (S/D/T of the current target, bull, Miss).
@@ -92,7 +102,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.5.0";
+  const VERSION = "3.5.1";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -328,12 +338,14 @@
     // before that moment are part of the state, so they are in the visit.
     function createMatchTracker(onVisit, log) {
       log = log || function () {};
-      let cur = null;
+      let cur = null, epoch = "";
       const sent = new Set();
       const sig = d => d.map(x => x.label).join(" ");
+      // epoch: set after an AutoDarts reset (the restarted leg can repeat turn keys, its visits must get new ids)
+      const idOf = t => t.matchId + "/" + t.key + (epoch ? "~" + epoch : "");
       function publish(t, reason) {
         if (!t || !t.darts.length) return;
-        const id = t.matchId + "/" + t.key;
+        const id = idOf(t);
         if (sent.has(id)) return;
         sent.add(id);
         onVisit({ id, darts: t.darts.slice(0, 3), extraDarts: Math.max(0, t.darts.length - 3), reason, matchId: t.matchId, key: t.key,
@@ -341,17 +353,20 @@
       }
       return {
         current() { return cur; },
+        epoch() { return epoch; },
+        // after a reset: forget the old turns, the next state is the new baseline (darts already in it are not lost)
+        reset(newEpoch) { cur = null; sent.clear(); epoch = newEpoch || ""; },
         update(m) {
           if (!m) return;
           if (cur && cur.matchId !== m.matchId) { log("Nowy mecz w Autodarts: " + m.matchId); cur = null; }
           if (!cur) {
             cur = m;
-            if (m.finished) sent.add(m.matchId + "/" + m.key); // leg already over when we joined
+            if (m.finished) sent.add(idOf(m)); // leg already over when we joined
             else if (m.darts.length) log("Start: tura w toku: " + sig(m.darts));
             return;
           }
           if (m.key !== cur.key) {
-            if (sent.has(m.matchId + "/" + m.key)) {
+            if (sent.has(idOf(m))) {
               // undo back into a turn that was already sent: send nothing, neither that turn nor the current one
               log("Autodarts wr\u00f3ci\u0142 do tury " + m.key + " (cofni\u0119cie). Ta tura ju\u017c jest w DartCounter. Nic nie wysy\u0142am, popraw DartCounter r\u0119cznie.");
             } else {
@@ -514,9 +529,80 @@
       return { score: total, total, note: "" };
     }
 
+    // Answer for the DartCounter dialog "Darts used on a double" / "Darts used for checkout".
+    // DartCounter counts a dart at a double while the rest before it is 50 or an even number 2..40 (double out).
+    // rest: the player's rest before the visit (null = unknown). isFinish: the dialog asks for checkout darts.
+    function simulateCheckout(darts, rest) {
+      let r = rest, atDouble = 0;
+      for (let i = 0; i < darts.length; i++) {
+        const d = darts[i];
+        if (r === 50 || (r >= 2 && r <= 40 && r % 2 === 0)) atDouble++;
+        const nr = r - d.score;
+        if (nr === 0 && d.multiplier === 2) return { atDouble, forCheckout: i + 1, finished: true, bust: false };
+        if (nr < 2) return { atDouble, forCheckout: null, finished: false, bust: true };
+        r = nr;
+      }
+      return { atDouble, forCheckout: null, finished: false, bust: false };
+    }
+    function checkoutAnswer(darts, rest, isFinish) {
+      const ds = (darts || []).filter(d => d && d.ok !== false).slice(0, 3);
+      let sim = rest != null && rest > 0 ? Object.assign(simulateCheckout(ds, rest), { exact: true }) : null;
+      if (isFinish && (!sim || !sim.finished) && ds.length) {
+        // checkout without a matching rest: the finishing dart is the last double of the visit
+        let k = -1;
+        ds.forEach((d, i) => { if (d.multiplier === 2) k = i; });
+        if (k < 0) k = ds.length - 1;
+        const r = ds.slice(0, k + 1).reduce((a, d) => a + d.score, 0);
+        sim = Object.assign(simulateCheckout(ds, r), { exact: false });
+        if (!sim.finished) sim = { atDouble: 1, forCheckout: k + 1, finished: true, bust: false, exact: false };
+      }
+      return sim || { atDouble: 0, forCheckout: null, finished: false, bust: false, exact: false };
+    }
+    // nearest value DartCounter offers (ties: the smaller one); null when nothing is offered
+    function pickOption(value, options) {
+      const opts = (options || []).filter(x => typeof x === "number" && !isNaN(x));
+      if (!opts.length) return null;
+      if (value == null) return opts[0];
+      return opts.reduce((best, x) => Math.abs(x - value) < Math.abs(best - value) || (Math.abs(x - value) === Math.abs(best - value) && x < best) ? x : best, opts[0]);
+    }
+
+    // ----- AutoDarts reset when a DartCounter leg ends -----
+    // New leg in DartCounter: every rest jumps to the same start value and somebody had a finishable rest (<= 170) before.
+    // An undo never matches: it changes one player and the values are not all the start score.
+    function legEndFromRests(prev, cur, startScore) {
+      if (!prev || !cur || !cur.length || prev.length !== cur.length) return false;
+      if (cur.some(x => x == null) || prev.some(x => x == null)) return false;
+      const x = cur[0];
+      if (cur.some(y => y !== x)) return false;
+      if (startScore != null ? x !== startScore : x < 301) return false;
+      return prev.every(p => p <= x) && prev.some(p => p < x && p <= 170);
+    }
+    // mode: "leg" (every leg end, also the last one of the match), "lost" (only a lost leg or match), "match" (match end), "off"
+    function resetWanted(mode, kind, won) {
+      if (mode === "leg") return true;
+      if (mode === "lost") return !won;
+      if (mode === "match") return kind === "match";
+      return false;
+    }
+    // what AutoDarts needs for a fresh X01 start, from its match state (same rules as its own Next button)
+    function resetPlan(raw) {
+      if (!raw || typeof raw !== "object") return null;
+      const noMatchMode = !raw.sets && !raw.legs;
+      if (raw.gameFinished || (raw.finished && noMatchMode)) return "next";
+      if (raw.finished) return "again";
+      return "restart";
+    }
+    // fresh leg: every score is the start score and nobody has thrown yet in it
+    function isFreshLeg(raw) {
+      if (!raw || !Array.isArray(raw.gameScores) || !raw.gameScores.length || raw.finished || raw.gameFinished) return false;
+      const base = raw.settings && raw.settings.baseScore;
+      if (base == null || raw.gameScores.some(x => x !== base)) return false;
+      return (raw.turns || []).every(t => !t || !Array.isArray(t.throws) || !t.throws.length);
+    }
+
     return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
       dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts,
-      atcDcConfig, atcAutodartsCheck, atcKey, visitFits };
+      atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, resetWanted, resetPlan, isFreshLeg };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -539,6 +625,7 @@
     logPanelLines: 8,
     logKeepLines: 300
   };
+  const RESET_MODES = { leg: "koniec ka\u017cdego lega", lost: "tylko po przegranym legu", match: "koniec meczu", off: "wy\u0142\u0105czony" };
   const K = {
     enabled: "ad2dc3_enabled",
     apiBase: "ad2dc3_api_base",
@@ -556,7 +643,11 @@
     playLive: "ad2dc3_play_live",
     playHb: "ad2dc3_play_hb",
     enteredIds: "ad2dc3_entered_ids",
-    cloud: "ad2dc3_cloud"
+    cloud: "ad2dc3_cloud",
+    resetMode: "ad2dc3_reset_mode",
+    resetCmd: "ad2dc3_reset_cmd",
+    resetAck: "ad2dc3_reset_ack",
+    playEpoch: "ad2dc3_play_epoch"
   };
 
   const host = location.hostname.toLowerCase();
@@ -1108,6 +1199,21 @@
   // =====================================================================
   // Role: play.autodarts game tab -> publish finished turns (source "gra")
   // =====================================================================
+  // runs code in the page JS world; at document-start <html> may not exist yet: then right when it appears
+  function injectPage(code, what) {
+    const go = () => {
+      try {
+        const sc = document.createElement("script");
+        sc.textContent = code;
+        (document.head || document.documentElement).appendChild(sc);
+        sc.remove();
+      } catch (e) { log(what + " nie wstrzykni\u0119ty: " + errText(e)); }
+    };
+    if (document.documentElement) { go(); return; }
+    const mo = new MutationObserver(() => { if (document.documentElement) { mo.disconnect(); go(); } });
+    mo.observe(document, { childList: true });
+  }
+
   function startPlay() {
     const W = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
     const st = { frames: 0, via: {}, last: null, lastTs: 0, lastRaw: null, published: 0, lastVisit: null, hookErr: "" };
@@ -1127,6 +1233,8 @@
       st.frames++; st.via[via] = (st.via[via] || 0) + 1;
       if (st.frames === 1) log("Odbieram stan meczu z gry Autodarts (" + via + ")");
       st.last = match; st.lastTs = now(); st.lastRaw = m.data;
+      // the same match after a reset (page reloaded): keep the visit ids of the restarted leg
+      if (st.epochSaved && st.epochSaved.matchId === match.matchId && !tracker.epoch() && !tracker.current()) tracker.reset(st.epochSaved.epoch);
       tracker.update(match);
       gset(K.playLive, { ts: now(), matchId: match.matchId, key: match.key, round: match.round, player: match.playerName, variant: match.variant,
         throws: match.darts.map(d => d.raw), finished: match.finished });
@@ -1187,11 +1295,171 @@
         Wr.__ad2dc = true;
         window.WebSocket = Wr;
       } + ")();";
-      const sc = document.createElement("script");
-      sc.textContent = code;
-      (document.head || document.documentElement).appendChild(sc);
-      sc.remove();
+      injectPage(code, "Skrypt strony");
     } catch (e) { log("Skrypt strony nie wstrzykni\u0119ty: " + errText(e)); }
+
+    // ----- AutoDarts reset, ordered by the DartCounter tab when a DartCounter leg ends -----
+    // Page helper (page JS world): API calls with the app's own login. Token: the app's auth module
+    // (refreshes it when needed), else the bearer token seen in the app's own requests. Only /matches/ and /lobbies/ paths.
+    try {
+      const helper = "(" + function () {
+        if (window.__ad2dcHelper) return;
+        window.__ad2dcHelper = 1;
+        var seen = { token: "", base: "" }, auth = null;
+        try {
+          var oOpen = XMLHttpRequest.prototype.open, oSet = XMLHttpRequest.prototype.setRequestHeader;
+          XMLHttpRequest.prototype.open = function (m, u) { try { this.__ad2dcUrl = String(u); } catch (_) {} return oOpen.apply(this, arguments); };
+          XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
+            try {
+              var u = this.__ad2dcUrl || "";
+              if (/^authorization$/i.test(k) && /^Bearer /.test(String(v)) && /api\.autodarts\./.test(u)) {
+                seen.token = String(v).slice(7);
+                var mm = /^(https:\/\/api\.autodarts\.[a-z]+\/gs\/v0)\//.exec(u);
+                if (mm) seen.base = mm[1];
+              }
+            } catch (_) {}
+            return oSet.apply(this, arguments);
+          };
+        } catch (_) {}
+        function findAuth() {
+          if (auth) return Promise.resolve(auth);
+          var urls = [].slice.call(document.querySelectorAll('link[rel=modulepreload][href*="/assets/src-"],script[type=module][src*="/assets/src-"]'))
+            .map(function (e) { return e.href || e.src; });
+          var i = 0;
+          function next() {
+            if (i >= urls.length) return null;
+            return import(urls[i++]).then(function (mod) {
+              for (var k in mod) { var v = mod[k]; if (v && typeof v.getToken === "function" && typeof v.refreshToken === "function") { auth = v; return v; } }
+              return next();
+            }, next);
+          }
+          return Promise.resolve().then(next);
+        }
+        function token() {
+          return findAuth().then(function (a) {
+            if (!a) return seen.token;
+            return Promise.resolve(a.refreshToken()).then(function () { return a.getToken() || seen.token; }, function () { return a.getToken() || seen.token; });
+          }, function () { return seen.token; });
+        }
+        window.addEventListener("message", function (ev) {
+          var d = ev.data;
+          if (ev.source !== window || !d || d.__ad2dcCmd !== 1) return;
+          function reply(x) { x.__ad2dcRes = 1; x.rid = d.rid; window.postMessage(x, "*"); }
+          if (!/^(GET|POST|DELETE)$/.test(d.method) || !/^\/(matches|lobbies)\/[\w\-\/]+$/.test(String(d.path))) return reply({ ok: false, status: 0, err: "niedozwolone: " + d.method + " " + d.path });
+          token().then(function (t) {
+            if (!t) return reply({ ok: false, status: 0, err: "brak tokenu logowania Autodarts (od\u015bwie\u017c kart\u0119 gry)" });
+            return fetch((seen.base || "https://api.autodarts.com/gs/v0") + d.path, { method: d.method, headers: { Authorization: "Bearer " + t } })
+              .then(function (r) {
+                return r.text().then(function (txt) {
+                  var j = null;
+                  try { j = txt ? JSON.parse(txt) : null; } catch (_) {}
+                  reply({ ok: r.ok, status: r.status, data: j, err: r.ok ? "" : "HTTP " + r.status + (txt ? " " + txt.slice(0, 160) : "") });
+                });
+              });
+          }).catch(function (e) { reply({ ok: false, status: 0, err: String(e && e.message || e) }); });
+        });
+      } + ")();";
+      injectPage(helper, "Pomocnik strony");
+    } catch (e) { log("Pomocnik strony nie wstrzykni\u0119ty: " + errText(e)); }
+
+    const pending = new Map();
+    window.addEventListener("message", ev => {
+      const d = ev.data;
+      if (ev.source !== window || !d || d.__ad2dcRes !== 1 || !pending.has(d.rid)) return;
+      const fn = pending.get(d.rid); pending.delete(d.rid); fn(d);
+    });
+    function api(method, path) {
+      return new Promise(resolve => {
+        const rid = Math.random().toString(36).slice(2);
+        const timer = setTimeout(() => { pending.delete(rid); resolve({ ok: false, status: 0, err: "strona nie odpowiedzia\u0142a (10 s)" }); }, 10000);
+        pending.set(rid, d => { clearTimeout(timer); resolve(d); });
+        window.postMessage({ __ad2dcCmd: 1, rid, method, path }, "*");
+      });
+    }
+    async function waitFresh(matchId, ms) {
+      const end = now() + ms;
+      while (now() < end) {
+        if (st.lastRaw && st.lastRaw.id === matchId && Core.isFreshLeg(st.lastRaw)) return true;
+        await sleep(150);
+      }
+      return false;
+    }
+    function newEpoch(matchId) {
+      const e = now().toString(36);
+      tracker.reset(e);
+      gset(K.playEpoch, { matchId, epoch: e });
+      return e;
+    }
+    // new match with the same settings and players (what "Play again" does); abortOld: end the running one first
+    async function newMatch(matchId, abortOld) {
+      const lob = await api("POST", "/lobbies/from-match/" + matchId);
+      if (!lob.ok || !lob.data || !lob.data.id) return { ok: false, how: "nowy mecz: lobby nie powsta\u0142o (" + (lob.err || "brak id") + ")" };
+      if (abortOld) {
+        const del = await api("DELETE", "/matches/" + matchId);
+        if (!del.ok) {
+          await api("DELETE", "/lobbies/" + lob.data.id);
+          return { ok: false, how: "nie mog\u0119 zako\u0144czy\u0107 bie\u017c\u0105cego meczu (" + del.err + ")" };
+        }
+      }
+      const start = await api("POST", "/lobbies/" + lob.data.id + "/start");
+      if (!start.ok || !start.data || !start.data.id) {
+        return { ok: false, how: "nowy mecz nie wystartowa\u0142 (" + (start.err || "brak id") + ")" + (abortOld ? ". Poprzedni mecz jest ju\u017c przerwany: za\u0142\u00f3\u017c now\u0105 gr\u0119 X01 r\u0119cznie" : "") };
+      }
+      log("Reset: nowy mecz X01 " + start.data.id + ", przechodz\u0119 do niego");
+      setTimeout(() => location.assign("/matches/" + start.data.id), 300);
+      return { ok: true, how: "nowy mecz X01" + (abortOld ? " (poprzedni przerwany)" : "") };
+    }
+    async function doReset(cmd) {
+      if (!/\/matches\//.test(location.pathname) || !st.last || !st.lastRaw) return { ok: false, how: "karta gry nie ma otwartego meczu" };
+      if (!/x01/i.test(st.last.variant)) return { ok: false, how: "w Autodarts nie jest X01 (" + (st.last.variant || "?") + ")" };
+      // darts of a turn in progress are never thrown away: that turn goes to DartCounter first
+      const end = now() + 90000;
+      let waited = false;
+      while (st.last.darts.length && !st.last.finished) {
+        if (now() > end) return { ok: false, how: "w Autodarts trwa tura z lotkami (" + st.last.darts.map(d => d.label).join(" ") + "), nie resetuj\u0119" };
+        if (!waited) { waited = true; log("Reset: czekam, a\u017c tura w toku p\u00f3jdzie do DartCounter (" + st.last.darts.map(d => d.label).join(" ") + ")"); }
+        await sleep(300);
+      }
+      const raw = st.lastRaw, matchId = raw.id;
+      if (Core.isFreshLeg(raw)) return { ok: true, how: "Autodarts ju\u017c jest na starcie lega" };
+      const plan = Core.resetPlan(raw);
+      log("Reset Autodarts (" + (cmd.kind === "match" ? "koniec meczu" : "koniec lega") + " w DartCounter): " +
+        (plan === "next" ? "nast\u0119pny leg" : plan === "again" ? "nowy mecz" : "leg od nowa") + (waited ? " (uwaga: tura w toku posz\u0142a ju\u017c do DartCounter)" : ""));
+      if (plan === "again") { newEpoch(matchId); return newMatch(matchId, false); }
+      const path = plan === "next" ? "/games/next" : "/games/restart";
+      newEpoch(matchId);
+      const r = await api("POST", "/matches/" + matchId + path);
+      if (r.ok && await waitFresh(matchId, 6000)) return { ok: true, how: plan === "next" ? "nast\u0119pny leg (games/next)" : "leg od nowa (games/restart)" };
+      log("Reset: " + path + (r.ok ? " bez \u015bwie\u017cego lega w stanie meczu" : " nie wyszed\u0142: " + r.err));
+      if (!r.ok && (r.status === 401 || r.status === 403 || /token/i.test(r.err))) return { ok: false, how: r.err };
+      // fallback: new match with the same settings, the running one is ended first (it is not finished)
+      return newMatch(matchId, true);
+    }
+    let resetBusy = false;
+    async function checkReset() {
+      if (resetBusy) return;
+      const cmd = await gget(K.resetCmd, null);
+      if (!cmd || cmd.id === st.resetSeen) return;
+      st.resetSeen = cmd.id;
+      if (now() - cmd.ts > 60000) return;
+      const tab = Math.random().toString(36).slice(2, 8);
+      const prev = await gget(K.resetAck, null);
+      if (prev && prev.id === cmd.id) return; // another game tab took it
+      await gset(K.resetAck, { id: cmd.id, ts: now(), state: "busy", how: "karta gry resetuje", tab });
+      await sleep(200);
+      const mine = await gget(K.resetAck, null);
+      if (!mine || mine.tab !== tab) return;
+      resetBusy = true;
+      let r;
+      try { r = await doReset(cmd); } catch (e) { r = { ok: false, how: errText(e) }; }
+      resetBusy = false;
+      log("Reset Autodarts: " + (r.ok ? "\u2713 " : "NIE WYSZED\u0141: ") + r.how);
+      await gset(K.resetAck, { id: cmd.id, ts: now(), state: r.ok ? "ok" : "fail", how: r.how, tab });
+    }
+    if (typeof GM_addValueChangeListener === "function") { try { GM_addValueChangeListener(K.resetCmd, () => { checkReset(); }); } catch (_) {} }
+    gget(K.resetCmd, null).then(c => { if (c) st.resetSeen = c.id; }); // an old order is not for this page
+    setTimeout(() => setInterval(checkReset, 500), 1500);
+    gget(K.playEpoch, null).then(e => { st.epochSaved = e; });
 
     gget(K.panelOpen, false).then(v => ui.mount(v));
     log("Start " + VERSION + " na karcie gry " + location.pathname + " (" + managerName() + ")");
@@ -1229,7 +1497,8 @@
       apiOk: 0, apiErr: "", apiFails: 0, lastRaw: null, lastRawDarts: null,
       relayOk: 0, cloudOk: 0, sourceName: "-", snap: null,
       lastVisit: null, lastEntry: null, err: "", busy: false,
-      queue: [], target: null,
+      queue: [], target: null, missed: [], waitWhy: "", dialogCtx: null, lastOwn: null,
+      resetMode: "leg", reset: null, startScore: null, pendingEnd: null, lastLegEndTs: 0, endScreen: false,
       rem: [], lastChangedIdx: null
     };
 
@@ -1311,6 +1580,17 @@
       S.soundVolume = v;
       clearTimeout(S.volSave); S.volSave = setTimeout(() => gset(K.soundVolume, S.soundVolume), 300);
     });
+    ui.addButton("reset", () => "Reset Autodarts: " + RESET_MODES[S.resetMode], async () => {
+      const order = Object.keys(RESET_MODES);
+      S.resetMode = order[(order.indexOf(S.resetMode) + 1) % order.length];
+      await gset(K.resetMode, S.resetMode);
+      log("Reset gry X01 w Autodarts: " + RESET_MODES[S.resetMode]);
+    });
+    ui.addButton("missed", () => "Wyczy\u015b\u0107 niewpisane (" + S.missed.length + ")", () => {
+      if (!S.missed.length) return;
+      log("Wyczyszczono list\u0119 niewpisanych tur (" + S.missed.map(m => m.labels).join(", ") + ")");
+      S.missed.length = 0; S.err = "";
+    });
     ui.addButton("delay", () => "Op\u00f3\u017anienie: " + S.sendDelay + " s", async () => {
       const steps = [0, 3, 5, 10];
       S.sendDelay = steps[(steps.indexOf(S.sendDelay) + 1) % steps.length];
@@ -1326,6 +1606,7 @@
       S.doubleOut = await gget(K.doubleOut, true);
       S.sendDelay = Number(await gget(K.sendDelay, 0)) || 0;
       S.entryMode = (await gget(K.entryMode, "sum")) === "darts" ? "darts" : "sum";
+      { const m = await gget(K.resetMode, "leg"); S.resetMode = RESET_MODES[m] ? m : "leg"; }
       S.sounds = (await gget(K.sounds, true)) !== false;
       ui.setQuick(soundQuick(), () => { toggleSounds(); });
       { const v = Number(await gget(K.soundVolume, 60)); S.soundVolume = isFinite(v) ? Math.max(0, Math.min(100, v)) : 60; }
@@ -1368,6 +1649,55 @@
     }
     function dialogOpen() {
       return Array.from(document.querySelectorAll("app-darts-for-throwout-dialog")).some(visible);
+    }
+    // Answers the DartCounter dialog with the darts of our visit. Sections (DartCounter order):
+    // "Darts used on a double" (0..3) and "Darts used for checkout" (1..3, only on a checkout).
+    async function answerDartsDialog(v, rest) {
+      const dlg = Array.from(document.querySelectorAll("app-darts-for-throwout-dialog")).find(visible);
+      if (!dlg) return { ok: true, how: "okno ju\u017c zamkni\u0119te" };
+      const groups = [];
+      for (const b of dlg.querySelectorAll('button[dctypography="bulevar-40"]')) {
+        if (!visible(b)) continue;
+        let g = groups.find(x => x.el === b.parentElement);
+        if (!g) { g = { el: b.parentElement, btns: [] }; groups.push(g); }
+        g.btns.push(b);
+      }
+      const vals = g => g.btns.map(b => parseInt(btnText(b), 10));
+      let dbl = null, fin = null;
+      if (groups.length >= 2) { dbl = groups[0]; fin = groups[1]; }
+      else if (groups.length === 1) { if (vals(groups[0]).includes(0)) dbl = groups[0]; else fin = groups[0]; }
+      const confirmBtn = Array.from(dlg.querySelectorAll("button")).find(b => visible(b) && b.hasAttribute("dcbutton"));
+      if (!groups.length || !confirmBtn) return { ok: false, how: "nie znam uk\u0142adu okna (brak przycisk\u00f3w)" };
+      const a = Core.checkoutAnswer(v.darts, rest, !!fin);
+      const finVal = fin ? Core.pickOption(a.forCheckout, vals(fin)) : null;
+      let dblVal = dbl ? Core.pickOption(a.atDouble, vals(dbl)) : null;
+      if (dbl && finVal != null && dblVal > finVal) dblVal = Core.pickOption(finVal, vals(dbl).filter(x => x <= finVal));
+      const click = async (g, val) => { const b = g.btns[vals(g).indexOf(val)]; if (b) { b.click(); await sleep(60); } };
+      if (fin && finVal != null) await click(fin, finVal);
+      if (dbl && dblVal != null) await click(dbl, dblVal);
+      const what = (fin ? "lotki na zako\u0144czenie: " + finVal : "") + (fin && dbl ? ", " : "") + (dbl ? "lotki na podw\u00f3jnej: " + dblVal : "") +
+        (a.exact ? "" : " (przybli\u017cenie: reszta nieznana)");
+      log("Okno lotek DartCounter: " + what + " (tura " + v.labels + ")");
+      if (fin) S.lastOwn = { ts: now(), finish: true, labels: v.labels }; // our checkout: the leg we are about to close is won
+      confirmBtn.click();
+      const closed = await waitFor(() => !dialogOpen(), 1500);
+      return closed ? { ok: true, how: what, finish: !!fin } : { ok: false, finish: !!fin, how: "okno nie zamkn\u0119\u0142o si\u0119 po potwierdzeniu (" + what + ")" };
+    }
+    // after an entry: answer the dialog when DartCounter shows it (it can appear a moment after the turn)
+    async function handleDartsDialog(v, rest) {
+      const open = await waitFor(() => dialogOpen(), 700);
+      if (!open) return null;
+      S.dialogCtx = { v, rest, ts: now(), tries: 0 };
+      return answerDialogCtx();
+    }
+    async function answerDialogCtx() {
+      const c = S.dialogCtx;
+      c.tries++;
+      const r = await answerDartsDialog(c.v, c.rest);
+      if (r.ok) { S.dialogCtx = null; return r; }
+      if (c.tries >= 2) setErr("DartCounter pyta o lotki, a skrypt nie umia\u0142 odpowiedzie\u0107 (" + r.how + "). Odpowiedz w oknie r\u0119cznie, kolejne tury poczekaj\u0105.",
+        { tura: c.v.labels, reszta: c.rest });
+      return r;
     }
     function keyboardSetting() {
       try { return localStorage.getItem("inGameKeyboard") || "(domy\u015blna: none na www)"; } catch (_) { return "?"; }
@@ -1544,6 +1874,7 @@
       try {
         S.playHb = await gget(K.playHb, null);
         S.playLive = await gget(K.playLive, null);
+        await checkResetAck();
         if (S.source === "play" && S.playLive && S.playLive.ts !== S.playLiveSeenTs) {
           S.playLiveSeenTs = S.playLive.ts;
           const liveKey = "gra:" + S.playLive.matchId + "/" + S.playLive.key;
@@ -1594,13 +1925,15 @@
         await sleep(200);
         if (!S.queue.length || S.busy || !S.leader) continue;
         const v = S.queue[0];
-        if (now() - v.ts > CFG.visitMaxAgeMs) { S.queue.shift(); setErr("Tura " + v.labels + " czeka\u0142a za d\u0142ugo, nie wpisana."); continue; }
+        // time while DartCounter shows its darts dialog does not count: the visit waits for the answer, never dropped for it
+        if (dialogOpen()) v.ts = Math.max(v.ts, now() - CFG.visitMaxAgeMs + 30000);
+        if (now() - v.ts > CFG.visitMaxAgeMs) { S.queue.shift(); missed(v, "czeka\u0142a za d\u0142ugo (" + Math.round(CFG.visitMaxAgeMs / 1000) + " s): " + (S.waitWhy || "brak pola wyniku w DartCounter")); continue; }
         if (now() < v.readyAt) { renderStrip(); continue; } // time to correct darts after the takeout
         const page = atcPage() ? "atc" : "x01";
         if (!Core.visitFits(v.variant, page)) {
           S.queue.shift();
-          setErr("Tura " + v.labels + " nie wpisana: Autodarts gra \u201e" + v.variant + "\u201d, a DartCounter ma otwarte " +
-            (page === "atc" ? "Around the Clock" : "X01") + ". Uruchom w DartCounter t\u0119 sam\u0105 gr\u0119.", { tura: v.labels, wariant: v.variant, strona: location.pathname });
+          missed(v, "Autodarts gra \u201e" + v.variant + "\u201d, a DartCounter ma otwarte " +
+            (page === "atc" ? "Around the Clock" : "X01") + ". Uruchom w DartCounter t\u0119 sam\u0105 gr\u0119.", { wariant: v.variant, strona: location.pathname });
           continue;
         }
         if (page === "atc") {
@@ -1617,23 +1950,35 @@
             continue;
           }
           S.busy = true; renderStrip();
-          try { await enterAtcVisit(v); } catch (e) { setErr("Wpis ATC nie wyszed\u0142: " + errText(e)); }
+          try { await enterAtcVisit(v); } catch (e) { missed(v, "wpis ATC nie wyszed\u0142: " + errText(e)); }
           S.queue.shift();
           S.busy = false; renderStrip();
           continue;
         }
         if (!matchPage().ok && !findTarget()) {
           S.queue.shift();
-          setErr("Tura " + v.labels + " nie wpisana: to nie jest strona meczu X01 (" + location.pathname + ")");
+          missed(v, "to nie jest strona meczu X01 (" + location.pathname + ")");
           continue;
         }
         if (dialogOpen()) {
-          if (waitingLogged !== v.id + "dlg") { waitingLogged = v.id + "dlg"; log("Czekam: DartCounter pyta o lotki. Odpowiedz w oknie."); }
+          // the dialog of our previous visit (it may open late): answer it; any other dialog waits for the player
+          if (S.dialogCtx && now() - S.dialogCtx.ts < 60000 && S.dialogCtx.tries < 2) {
+            S.busy = true;
+            try { await answerDialogCtx(); } catch (e) { log("Okno lotek: " + errText(e)); }
+            S.busy = false;
+            continue;
+          }
+          S.waitWhy = "DartCounter pyta o lotki";
+          if (waitingLogged !== v.id + "dlg") {
+            waitingLogged = v.id + "dlg";
+            setErr("DartCounter pyta o lotki. Odpowiedz w oknie, tura " + v.labels + " czeka i wpisze si\u0119 potem.", { tura: v.labels });
+          }
           continue;
         }
         const t = findTarget();
         if (t && t.mode === "unsupported") {
           // wait (up to visitMaxAgeMs) until the player switches to a keyboard that can take the visit
+          S.waitWhy = t.how;
           if (waitingLogged !== v.id + "kb") {
             waitingLogged = v.id + "kb";
             setErr("Czekam z tur\u0105 " + v.labels + ": " + t.how + ". Wybierz w DartCounter klawiatur\u0119 Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d.",
@@ -1642,12 +1987,26 @@
           continue;
         }
         if (!t) {
+          S.waitWhy = "brak pola wyniku (np. rzuca przeciwnik)";
           if (waitingLogged !== v.id + "t") { waitingLogged = v.id + "t"; log("Czekam na pole wyniku (np. rzuca DartBot)"); }
           continue;
         }
+        S.waitWhy = "";
         S.busy = true; renderStrip();
-        try { await enterVisit(v, t); } catch (e) { setErr("Wpis nie wyszed\u0142: " + errText(e)); }
-        S.queue.shift();
+        let res;
+        const snap = readRemaining().join(",");
+        try { res = await enterVisit(v, t); } catch (e) {
+          // retry only when DartCounter shows no trace of this visit
+          res = { ok: false, how: errText(e), retry: readRemaining().join(",") === snap && !enteredSlots(scoreHost()).length && !dialogOpen() };
+        }
+        if (res && !res.ok && res.retry && (v.tries = (v.tries || 0) + 1) <= 2) {
+          // nothing of this visit reached DartCounter: try again a moment later (the visit stays first in the queue)
+          log("Ponawiam tur\u0119 " + v.labels + " (pr\u00f3ba " + (v.tries + 1) + "/3): " + res.how);
+          v.readyAt = now() + 1500;
+        } else {
+          S.queue.shift();
+          if (res && !res.ok) missed(v, res.how);
+        }
         S.busy = false; renderStrip();
       }
     }
@@ -1723,7 +2082,7 @@
     // Clicks the darts one by one. Never clicks "Submit" when no dart of this visit is entered.
     async function enterDarts(v) {
       const host0 = scoreHost();
-      if (!singleKb() || !host0) return { ok: false, aborted: true, how: "brak klawiatury lotek \u201esingle\u201d w DartCounter" };
+      if (!singleKb() || !host0) return { ok: false, aborted: true, nothing: true, how: "brak klawiatury lotek \u201esingle\u201d w DartCounter" };
       const pre = enteredSlots(host0).length;
       if (pre > 0) return { ok: false, aborted: true, how: "w DartCounter s\u0105 ju\u017c wpisane lotki tej tury (" + pre + "). Doko\u0144cz je r\u0119cznie" };
       const remBefore = readRemaining().join(",");
@@ -1733,7 +2092,7 @@
         if (!kb) { stop = "tura zako\u0144czona przez DartCounter"; break; }
         if (bustConfirm(kb)) { stop = "DartCounter zg\u0142osi\u0142 przerzucenie"; break; }
         const miss = await clickDart(d);
-        if (miss) return { ok: false, aborted: true, how: miss + " (wpisane lotki: " + n + ")" };
+        if (miss) return { ok: false, aborted: true, nothing: n === 0 && !enteredSlots(scoreHost()).length, how: miss + " (wpisane lotki: " + n + ")" };
         await sleep(40);
         n++;
         const r = await waitFor(() => {
@@ -1870,7 +2229,7 @@
         setErr("Nic nie wpisano: " + t.how + ". W DartCounter wybierz klawiatur\u0119 Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d.",
           { tura: v.labels, klawiatura: keyboardSetting() });
         S.lastEntry = { score: v.labels, labels: v.labels, ok: false, how: t.how, ts: now() };
-        return;
+        return { ok: false, how: t.how, retry: false };
       }
       if (t.mode === "darts" && S.entryMode !== "darts") log("DartCounter ma klawiatur\u0119 lotek: wpisuj\u0119 lotka po lotce.");
       if (S.entryMode === "darts" || t.mode === "darts") {
@@ -1880,11 +2239,18 @@
           entered.push(v.id); while (entered.length > 50) entered.shift();
           await gset(K.enteredIds, entered);
           log("Wpisuj\u0119 lotka po lotce: " + v.labels + (v.corrected ? " (lotki poprawione r\u0119cznie)" : ""));
+          const rest0 = currentRemaining();
           const res = await enterDarts(v);
           S.lastEntry = { score: v.labels, labels: v.labels, ok: res.ok, how: res.how, ts: now() };
-          if (res.ok) { log("Wpisano lotki " + v.labels + " \u2713 (" + res.how + ")"); S.err = ""; }
-          else setErr("Wpis lotek " + v.labels + " przerwany: " + res.how, { tura: v.labels, klawiatura: keyboardSetting(), wpisaneLotki: enteredSlots(scoreHost()) });
-          return;
+          if (res.ok) {
+            const dlg = await handleDartsDialog(v, rest0.rem);
+            log("Wpisano lotki " + v.labels + " \u2713 (" + res.how + (dlg && dlg.ok ? "; okno: " + dlg.how : "") + ")");
+            noteOwnEntry(v, rest0, dlg);
+            if (!dlg || dlg.ok) S.err = "";
+            return { ok: true };
+          }
+          setErr("Wpis lotek " + v.labels + " przerwany: " + res.how, { tura: v.labels, klawiatura: keyboardSetting(), wpisaneLotki: enteredSlots(scoreHost()) });
+          return { ok: false, how: res.how, retry: !!res.nothing };
         }
         log("Tryb \u201elotka po lotce\u201d, ale DartCounter nie ma klawiatury \u201esingle\u201d (" + keyboardSetting() + "). Wpisuj\u0119 sum\u0119 tury.");
       }
@@ -1915,9 +2281,28 @@
       }
       if (res.ok && score === 0 && cur.idx != null) S.lastChangedIdx = cur.idx;
       S.lastEntry = { score, labels: v.labels, ok: res.ok, how: res.how, ts: now() };
-      if (res.ok) { log("Wpisano " + score + " \u2713 (" + res.how + ")"); S.err = ""; }
-      else setErr("Wpis " + score + " nie zadzia\u0142a\u0142 (" + res.how + "). Klawiatura w DartCounter: " + keyboardSetting(),
+      if (res.ok) {
+        const dlg = await handleDartsDialog(v, cur.rem);
+        log("Wpisano " + score + " \u2713 (" + res.how + (dlg && dlg.ok ? "; okno: " + dlg.how : "") + ")");
+        noteOwnEntry(v, cur, dlg);
+        if (!dlg || dlg.ok) S.err = "";
+        return { ok: true };
+      }
+      setErr("Wpis " + score + " nie zadzia\u0142a\u0142 (" + res.how + "). Klawiatura w DartCounter: " + keyboardSetting(),
         { tura: v.labels, wynik: score, sposob: t.how, reszta: readRemaining() });
+      return { ok: false, how: res.how, retry: false };
+    }
+
+    // a visit that did not reach DartCounter: never silent (panel row, red dot, log, console.warn) until "Wyczy\u015b\u0107 niewpisane"
+    function missed(v, why, details) {
+      S.missed.push({ labels: v.labels, why, ts: now() });
+      while (S.missed.length > 10) S.missed.shift();
+      setErr("Tura " + v.labels + " NIE wpisana: " + why + ". Wpisz j\u0105 w DartCounter r\u0119cznie.", Object.assign({ tura: v.labels }, details || {}));
+    }
+    // a visit of ours reached DartCounter: remember whether it ended the leg (finish)
+    function noteOwnEntry(v, cur, dlg) {
+      const fin = dlg ? !!dlg.finish : cur.rem != null && Core.checkoutAnswer(v.darts, cur.rem, false).finished;
+      S.lastOwn = { ts: now(), finish: fin, labels: v.labels };
     }
 
     // errors: panel + log + one readable console.warn with the details
@@ -1929,9 +2314,74 @@
       } catch (_) {}
     }
 
+    // ----- end of a DartCounter leg / match -> fresh X01 game in Autodarts (setting "Reset Autodarts") -----
+    const START_SCORES = [101, 170, 201, 301, 401, 501, 601, 701, 801, 901, 1001];
+    function endScreenOpen() {
+      return Array.from(document.querySelectorAll("app-match-local-end-screen-dialog,app-match-online-end-screen-dialog,app-local-end-screen")).some(visible);
+    }
+    function watchLegEnd(r) {
+      if (atcPage() || !matchPage().ok) { S.endScreen = false; return; }
+      if (S.startScore == null && r.length && r.every(x => x === r[0]) && START_SCORES.includes(r[0])) S.startScore = r[0];
+      if (r.length === S.rem.length && Core.legEndFromRests(S.rem, r, S.startScore)) {
+        S.startScore = r[0];
+        legEnded("leg");
+      }
+      const es = endScreenOpen();
+      if (es && !S.endScreen) legEnded("match");
+      S.endScreen = es;
+    }
+    // evaluated a moment later: our own checkout entry finishes (dialog answer) before we decide won / lost
+    function legEnded(kind) {
+      if (S.pendingEnd) { if (kind === "match") S.pendingEnd.kind = "match"; return; }
+      if (now() - S.lastLegEndTs < 5000) return; // new leg + end screen of the same checkout
+      S.pendingEnd = { kind, ts: now() };
+      setTimeout(finishLegEnd, 1200);
+    }
+    function finishLegEnd() {
+      const p = S.pendingEnd;
+      if (!p) return;
+      if (S.busy && now() - p.ts < 10000) { setTimeout(finishLegEnd, 300); return; }
+      S.pendingEnd = null;
+      S.lastLegEndTs = now();
+      const won = !!(S.lastOwn && S.lastOwn.finish) || readRemaining().length === 1;
+      S.lastOwn = null;
+      const what = (p.kind === "match" ? "koniec meczu" : "koniec lega") + " (" + (won ? "wygrany" : "przegrany") + ")";
+      log("DartCounter: " + what);
+      if (!S.enabled || !S.leader) return;
+      if (!Core.resetWanted(S.resetMode, p.kind, won)) { log("Reset Autodarts: nie teraz (" + RESET_MODES[S.resetMode] + ")"); return; }
+      if (S.source !== "play") { log("Reset Autodarts dzia\u0142a tylko ze \u017ar\u00f3d\u0142em \u201egra Autodarts\u201d"); return; }
+      requestReset(p.kind, won, what);
+    }
+    async function requestReset(kind, won, what) {
+      const cmd = { id: tabId + "-" + now().toString(36), ts: now(), kind, won };
+      S.reset = { id: cmd.id, ts: now(), state: "sent", how: "czekam na kart\u0119 gry", what };
+      await gset(K.resetCmd, cmd);
+      log("Reset Autodarts: polecenie do karty gry (" + what + ")");
+    }
+    // answer of the game tab (read in the play loop)
+    async function checkResetAck() {
+      const r = S.reset;
+      if (!r || r.state === "ok" || r.state === "fail") return;
+      const ack = await gget(K.resetAck, null);
+      if (ack && ack.id === r.id && ack.state !== r.state) {
+        r.state = ack.state; r.how = ack.how; r.ackTs = now();
+        if (ack.state === "ok") log("Reset Autodarts \u2713 " + ack.how);
+        if (ack.state === "fail") setErr("Reset Autodarts nie wyszed\u0142: " + ack.how + ". Zacznij w Autodarts now\u0105 gr\u0119 X01 r\u0119cznie (tury nie gin\u0105, wpisuj\u0105 si\u0119 dalej).", { reset: r.what });
+        return;
+      }
+      if (r.state === "sent" && now() - r.ts > 8000) {
+        r.state = "fail"; r.how = "karta gry nie odpowiada";
+        setErr("Reset Autodarts: karta gry nie odpowiada (otwarta? od\u015bwie\u017cona po aktualizacji skryptu?). Zacznij w Autodarts now\u0105 gr\u0119 X01 r\u0119cznie.", { reset: r.what });
+      } else if (r.state === "busy" && now() - (r.ackTs || r.ts) > 120000) {
+        r.state = "fail"; r.how = "brak wyniku po 2 min";
+        setErr("Reset Autodarts: brak wyniku z karty gry. Sprawd\u017a Autodarts i w razie potrzeby zacznij now\u0105 gr\u0119 X01 r\u0119cznie.", { reset: r.what });
+      }
+    }
+
     // ----- whose turn: remember which player's rest changed last -----
     function watchRemaining() {
       const r = readRemaining();
+      watchLegEnd(r);
       if (r.length !== S.rem.length) { S.lastChangedIdx = null; S.rem = r; return; }
       const changed = [];
       for (let i = 0; i < r.length; i++) if (r[i] !== S.rem[i]) changed.push(i);
@@ -2037,7 +2487,10 @@
         ["Wpis", t && t.mode === "darts" ? "lotka po lotce (klawiatura lotek w DartCounter)"
           : t && t.mode === "unsupported" ? "BRAK: " + t.how
           : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],
-        ["Kolejka", String(S.queue.length)]
+        ["Kolejka", String(S.queue.length) + (S.queue.length && S.waitWhy ? " (czeka: " + S.waitWhy + ")" : "")],
+        ["Reset Autodarts", RESET_MODES[S.resetMode] + (S.reset ? " | ostatni: " + hhmmss(S.reset.ts) + " " +
+          (S.reset.state === "ok" ? "\u2713 " : S.reset.state === "fail" ? "\u2717 " : "\u2026 ") + S.reset.how : "")],
+        ...(S.missed.length ? [["Niewpisane tury", S.missed.map(m => hhmmss(m.ts) + " " + m.labels + ": " + m.why).join(" | ")]] : [])
       ];
       ui.set("rows", rows);
       const kb = keyboardSetting();
@@ -2058,7 +2511,7 @@
       ui.set("err", old ? "Dzia\u0142a te\u017c stary skrypt AD2DC. Wy\u0142\u0105cz go w mened\u017cerze skrypt\u00f3w." : S.err);
       let dot = "#22c55e", pill = "AD2DC " + VERSION + " \u2713";
       if (!S.enabled) { dot = "#9ca3af"; pill = "AD2DC " + VERSION + " wy\u0142."; }
-      else if (S.err || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + " b\u0142\u0105d"; }
+      else if (S.err || S.missed.length || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + (S.missed.length ? " niewpisane: " + S.missed.length : " b\u0142\u0105d"); }
       else if (S.source === "play" && !playTabFresh()) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz gr\u0119 Autodarts"; }
       else if (!mp.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz mecz X01"; }
       else if (atcCfg && !atcCfg.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": ATC nieobs\u0142ugiwane"; }
@@ -2083,6 +2536,8 @@
         "reszta graczy: " + safeJson(readRemaining()) + " | ostatnio zmieniony: " + S.lastChangedIdx,
         "ostatni wpis: " + safeJson(S.lastEntry),
         "b\u0142\u0105d: " + (S.err || "-"),
+        "reset Autodarts: " + RESET_MODES[S.resetMode] + " | ostatni: " + safeJson(S.reset) + " | start: " + S.startScore,
+        "niewpisane tury: " + (S.missed.length ? safeJson(S.missed) : "-") + " | kolejka: " + S.queue.length + (S.waitWhy ? " (" + S.waitWhy + ")" : ""),
         "--- log ---",
         ...logBuf.map(x => x.line),
         "--- ostatni stan z lotkami ---",

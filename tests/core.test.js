@@ -455,5 +455,92 @@ test("decideScore: guessed remaining only blocks finish without double, busts le
   assert.equal(Core.decideScore([D("S20"), D("S20")], 40, false, true).score, 0);
 });
 
+// ---------- 3.5.1: DartCounter darts dialog ----------
+const CO = s => s.split(" ").map(l => Core.normalizeThrow(l));
+test("checkout 1 dart: 40, D20 -> checkout 1, at double 1", () => {
+  const a = Core.checkoutAnswer(CO("D20"), 40, true);
+  assert.deepEqual([a.forCheckout, a.atDouble, a.finished, a.exact], [1, 1, true, true]);
+});
+test("checkout 2 darts: 60, S20 D20 -> 2 / 1", () => {
+  const a = Core.checkoutAnswer(CO("S20 D20"), 60, true);
+  assert.deepEqual([a.forCheckout, a.atDouble], [2, 1]);
+});
+test("checkout 3 darts: 100, T20 S20 D10 -> 3 / 2 (rest 40 and 20 are doubles)", () => {
+  const a = Core.checkoutAnswer(CO("T20 S20 D10"), 100, true);
+  assert.deepEqual([a.forCheckout, a.atDouble], [3, 2]);
+});
+test("doubles before the checkout: 32, S16 S8 D4 -> 3 / 3", () => {
+  const a = Core.checkoutAnswer(CO("S16 S8 D4"), 32, true); // 32 -> 16 -> 8 -> finish: 3 darts at a double
+  assert.deepEqual([a.forCheckout, a.atDouble], [3, 3]);
+});
+test("bull checkout: 50, D25 -> 1 / 1", () => {
+  const a = Core.checkoutAnswer(CO("D25"), 50, true);
+  assert.deepEqual([a.forCheckout, a.atDouble], [1, 1]);
+});
+test("bust 22: S3 S18 -> at double 1, not finished", () => {
+  const a = Core.checkoutAnswer(CO("S3 S18"), 22, false);
+  assert.deepEqual([a.atDouble, a.finished, a.bust], [1, false, true]);
+});
+test("no finish, 70: S10 S10 (rests 70, 60 are no doubles) -> 0", () => {
+  assert.equal(Core.checkoutAnswer(CO("S10 S10"), 70, false).atDouble, 0);
+});
+test("checkout with unknown rest: the last double ends the visit, marked inexact", () => {
+  const a = Core.checkoutAnswer(CO("S20 D20"), null, true);
+  assert.deepEqual([a.forCheckout, a.atDouble, a.exact], [2, 1, false]);
+});
+test("checkout with a wrong rest (DartCounter says checkout): falls back to the darts", () => {
+  const a = Core.checkoutAnswer(CO("T20 D20"), 140, true);
+  assert.deepEqual([a.forCheckout, a.finished], [2, true]);
+});
+test("pickOption: exact, nearest, empty", () => {
+  assert.equal(Core.pickOption(2, [1, 2, 3]), 2);
+  assert.equal(Core.pickOption(1, [2, 3]), 2);
+  assert.equal(Core.pickOption(3, [0, 1]), 1);
+  assert.equal(Core.pickOption(null, [0, 1, 2]), 0);
+  assert.equal(Core.pickOption(1, []), null);
+});
+
+// ---------- 3.5.1: Autodarts reset ----------
+test("leg end: all rests back to the start, somebody had <= 170", () => {
+  assert.equal(Core.legEndFromRests([32, 140], [501, 501], null), true);
+  assert.equal(Core.legEndFromRests([0, 245], [501, 501], 501), true);
+  assert.equal(Core.legEndFromRests([40], [501], 501), true);
+});
+test("no leg end: undo, normal turns, other start values", () => {
+  assert.equal(Core.legEndFromRests([100, 60], [100, 100], 501), false); // undo to equal rests
+  assert.equal(Core.legEndFromRests([441, 501], [501, 501], 501), false); // undo of the first turn (rest > 170)
+  assert.equal(Core.legEndFromRests([501, 501], [441, 501], 501), false);
+  assert.equal(Core.legEndFromRests([40, 60], [301, 301], 501), false);
+  assert.equal(Core.legEndFromRests([40, 60], [501], 501), false);
+});
+test("resetWanted for every setting", () => {
+  assert.deepEqual(["leg", "lost", "match", "off"].map(m => [Core.resetWanted(m, "leg", true), Core.resetWanted(m, "leg", false), Core.resetWanted(m, "match", true), Core.resetWanted(m, "match", false)]),
+    [[true, true, true, true], [false, true, false, true], [false, false, true, true], [false, false, false, false]]);
+});
+test("resetPlan like the Autodarts Next button", () => {
+  assert.equal(Core.resetPlan({ gameFinished: true, finished: false, legs: 3 }), "next");
+  assert.equal(Core.resetPlan({ finished: true }), "next"); // match mode off
+  assert.equal(Core.resetPlan({ finished: true, legs: 3 }), "again");
+  assert.equal(Core.resetPlan({ finished: false, gameFinished: false }), "restart");
+  assert.equal(Core.resetPlan(null), null);
+});
+test("isFreshLeg", () => {
+  const st = (o) => Object.assign({ settings: { baseScore: 501 }, gameScores: [501, 501], turns: [{ throws: [] }], finished: false, gameFinished: false }, o);
+  assert.equal(Core.isFreshLeg(st({})), true);
+  assert.equal(Core.isFreshLeg(st({ gameScores: [441, 501] })), false);
+  assert.equal(Core.isFreshLeg(st({ turns: [{ throws: [{}] }] })), false);
+  assert.equal(Core.isFreshLeg(st({ gameFinished: true })), false);
+});
+test("match tracker epoch: after reset the repeated turn keys are new visits", () => {
+  const out = [];
+  const tr = Core.createMatchTracker(v => out.push(v));
+  const m = (round, throws) => Core.parseMatch({ id: "m1", turns: [{ round, throws }], round, players: [], player: 0 });
+  tr.update(m(1, [])); tr.update(m(1, [oldT("S20", 20, "Single", 1)])); tr.update(m(2, []));
+  tr.reset("e1");
+  tr.update(m(1, [])); tr.update(m(1, [oldT("S5", 5, "Single", 1)])); tr.update(m(2, []));
+  assert.deepEqual(out.map(v => v.id), ["m1/0.0.1.0", "m1/0.0.1.0~e1"]);
+  assert.equal(out[1].darts[0].label, "S5");
+});
+
 if (failed) { console.log(failed + " test(s) failed"); process.exit(1); }
 console.log("all core tests passed");
