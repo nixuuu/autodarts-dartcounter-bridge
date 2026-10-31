@@ -376,6 +376,65 @@ test("fireworks: next turn and undo", () => {
   assert.deepEqual(bulls([["local", []], ["local", ["S1", "S1", "S1"]], ["local", []], ["local", ["BULL"]]]), ["big"]);
 });
 
+// ---------- Around the Clock (3.5.0) ----------
+test("ATC DartCounter settings: classic 1-20 + bullseye supported, others skipped with a reason", () => {
+  assert.equal(Core.atcDcConfig(null).ok, true);                                  // DartCounter defaults
+  const c = Core.atcDcConfig({ bullOrBullseye: "bullseye", throwOrder: "low_to_high", numberSegment: "all", hit: "once", increaseGoalByMultiplier: false });
+  assert.equal(c.ok, true); assert.equal(c.throwout, "bullseye"); assert.equal(c.segment, "all"); assert.equal(c.hits, "once");
+  for (const bad of [{ throwOrder: "high_to_low" }, { throwOrder: "random" }, { increaseGoalByMultiplier: true }, { numberSegment: "single_big" }, { numberSegment: "single_small" }]) {
+    const r = Core.atcDcConfig(bad);
+    assert.equal(r.ok, false, JSON.stringify(bad)); assert.ok(r.why.length > 5);
+  }
+  assert.equal(Core.atcDcConfig({ numberSegment: "double", hit: "thrice", bullOrBullseye: "all" }).ok, true);
+});
+
+test("ATC Autodarts settings: 1-20-Bull with matching mode/hits only", () => {
+  const dc = Core.atcDcConfig(null);
+  assert.equal(Core.atcAutodartsCheck({ order: "1-20-Bull", mode: "Full", hits: 1 }, dc).ok, true);
+  assert.equal(Core.atcAutodartsCheck(null, dc).ok, true);                         // local board: DartCounter decides
+  assert.equal(Core.atcAutodartsCheck({ order: "20-1-Bull", mode: "Full", hits: 1 }, dc).ok, false);
+  assert.equal(Core.atcAutodartsCheck({ order: "Random-Bull", mode: "Full", hits: 1 }, dc).ok, false);
+  assert.equal(Core.atcAutodartsCheck({ order: "1-20-Bull", mode: "Outer Single", hits: 1 }, dc).ok, false);
+  assert.equal(Core.atcAutodartsCheck({ order: "1-20-Bull", mode: "Double", hits: 1 }, dc).ok, false);   // DartCounter "all"
+  assert.equal(Core.atcAutodartsCheck({ order: "1-20-Bull", mode: "Full", hits: 2 }, dc).ok, false);     // DartCounter "once"
+  assert.equal(Core.atcAutodartsCheck({ order: "1-20-Bull", mode: "Double", hits: 3 }, Core.atcDcConfig({ numberSegment: "double", hit: "thrice" })).ok, true);
+});
+
+test("ATC dart -> DartCounter key (classic: S/D/T all count, one target per hit, bull 50 at the end)", () => {
+  const cfg = Core.atcDcConfig(null), k = (l, t) => Core.atcKey(Core.normalizeThrow(l), t, cfg);
+  const seven = { kind: "number", n: 7 }, bull = { kind: "bull" };
+  assert.equal(k("S7", seven), "S"); assert.equal(k("D7", seven), "D"); assert.equal(k("T7", seven), "T");
+  for (const l of ["S8", "T17", "M7", "25", "BULL"]) assert.equal(k(l, seven), "miss", l);
+  assert.equal(k("BULL", bull), "bull");              // 50 finishes
+  assert.equal(k("25", bull), "miss");                // outer bull does not count with "Finish by hitting the bullseye"
+  assert.equal(k("S20", bull), "miss"); assert.equal(k("M3", bull), "miss");
+  assert.equal(Core.atcKey(Core.normalizeThrow({ foo: 1 }), seven, cfg), "miss");
+});
+
+test("ATC dart -> key for other DartCounter settings (single bull, either bull, segment-only)", () => {
+  const bull = { kind: "bull" }, seven = { kind: "number", n: 7 };
+  const sb = Core.atcDcConfig({ bullOrBullseye: "bull" }), either = Core.atcDcConfig({ bullOrBullseye: "all" }), dbl = Core.atcDcConfig({ numberSegment: "double" });
+  assert.equal(Core.atcKey(Core.normalizeThrow("25"), bull, sb), "bull"); assert.equal(Core.atcKey(Core.normalizeThrow("BULL"), bull, sb), "miss");
+  assert.equal(Core.atcKey(Core.normalizeThrow("25"), bull, either), "singlebull"); assert.equal(Core.atcKey(Core.normalizeThrow("BULL"), bull, either), "bullseye");
+  assert.equal(Core.atcKey(Core.normalizeThrow("D7"), seven, dbl), "hit"); assert.equal(Core.atcKey(Core.normalizeThrow("S7"), seven, dbl), "miss");
+});
+
+test("visit goes only to the matching DartCounter game (X01 vs ATC)", () => {
+  assert.equal(Core.visitFits("X01", "x01"), true); assert.equal(Core.visitFits("ATC", "atc"), true);
+  assert.equal(Core.visitFits("ATC", "x01"), false); assert.equal(Core.visitFits("X01", "atc"), false);
+  assert.equal(Core.visitFits("Cricket", "x01"), false);
+  assert.equal(Core.visitFits("", "x01"), true); assert.equal(Core.visitFits(undefined, "atc"), true); // local board
+});
+
+test("parseMatch keeps the ATC settings for the bridge", () => {
+  const m = Core.parseMatch({ id: "a1", variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, players: P, player: 0, round: 1, turns: [{ round: 1, playerId: "p1", throws: [seg("S1", 1, 1, "SingleInner")] }] });
+  assert.equal(m.variant, "ATC"); assert.deepEqual(m.settings, { order: "1-20-Bull", mode: "Full", hits: 1 });
+  const out = [];
+  const tr = Core.createMatchTracker(v => out.push(v));
+  tr.update(m); tr.update(Core.parseMatch({ id: "a1", variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, players: P, player: 0, round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }] }));
+  assert.equal(out.length, 1); assert.equal(out[0].variant, "ATC"); assert.equal(out[0].settings.order, "1-20-Bull");
+});
+
 const D = (lbl) => Core.normalizeThrow(lbl);
 test("decideScore: normal, unknown remaining", () => {
   assert.equal(Core.decideScore([D("T20"), D("T20"), D("T20")], null, false, true).score, 180);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.5.0
+
+- Around the Clock: an Autodarts ATC game (or the local board) is entered into DartCounter's Around the Clock dart by dart: a hit on the current target (S, D or T key) or Miss, then the turn is submitted.
+  - Supported: 1 to 20, then bull. DartCounter: "Play from 1 to 20", segments All/Single/Double/Treble, 1-3 hits, "Increase by segment" off, any bull setting ("Finish by hitting the bullseye" = only 50). Autodarts: order 1-20-Bull with a matching mode (Full/Single/Double/Triple) and hits.
+  - DartCounter's settings decide what is a hit. Autodarts also finishes on the outer bull (25); with "Finish by hitting the bullseye" DartCounter only finishes on 50 (intended).
+  - Other orders and settings, the clickable-board keyboard and a different game on each side are skipped with a clear message in the panel and in the console.
+- X01: a visit is only entered into an X01 match when Autodarts plays X01 (or the source is the local board), never an ATC visit.
+
 ## 3.4.1
 
 - Fireworks only for the bullseye (50, D-Bull). The outer bull (25) no longer shows fireworks or plays the fireworks sound.

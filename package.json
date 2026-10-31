@@ -1,11 +1,11 @@
 {
   "name": "autodarts-dartcounter-bridge",
-  "version": "3.4.1",
+  "version": "3.5.0",
   "private": true,
   "description": "Userscript: AutoDarts visits entered automatically into app.dartcounter.net",
   "license": "MIT",
   "scripts": {
-    "test": "node tests/core.test.js && node tests/dom-sim.test.js && node tests/dom-darts.test.js"
+    "test": "node tests/core.test.js && node tests/dom-sim.test.js && node tests/dom-darts.test.js && node tests/dom-atc.test.js"
   },
   "devDependencies": {
     "jsdom": "^24.1.3"

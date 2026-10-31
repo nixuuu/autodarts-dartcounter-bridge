@@ -4,7 +4,7 @@ Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://a
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.4.1**. Zmiany: [CHANGELOG.md](CHANGELOG.md).
+Wersja: **3.5.0**. Zmiany: [CHANGELOG.md](CHANGELOG.md).
 
 ## Instalacja
 
@@ -43,6 +43,30 @@ Sposób wpisu wynika z klawiatury wybranej w meczu DartCounter (ikona klawiatury
 - Klawiatura z klikaną tarczą i „hotkeys” nie są obsługiwane: skrypt nic nie wpisuje, pokazuje błąd i czeka z turą (do 2 min), aż wybierzesz jedną z klawiatur powyżej.
 
 Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma pierwszeństwo: przy klawiaturze lotek skrypt zawsze wpisuje lotka po lotce, przy polu tekstowym lub klawiaturze z cyframi — sumę.
+
+## Around the Clock (od 3.5.0)
+
+Gra **Around the Clock** w Autodarts trafia do gry **Around the Clock** w DartCounter, lotka po lotce. Obsługiwany wariant: **od 1 do 20, na koniec bull 50**.
+
+Ustawienia:
+
+1. **Autodarts:** Around the Clock, Order **1-20-Bull**, Mode **Full**, Hits **1**.
+2. **DartCounter:** Graj lokalnie → Around the Clock: **Play from 1 to 20**, **Finish by hitting the bullseye**, segmenty **All**, trafienia **Once**, „**Increase by segment**” wyłączone.
+3. W meczu DartCounter zostaw zwykłą klawiaturę z przyciskami **S/D/T** bieżącego celu i **Miss** (klawiatura z klikaną tarczą nie jest obsługiwana).
+4. Adres strony: `app.dartcounter.net/game/around-the-clock`. Panel AD2DC pokazuje „Strona meczu: TAK (Around the Clock)” i wiersz z ustawieniami DartCounter.
+
+Jak to działa: po każdej turze z Autodarts skrypt klika w DartCounter każdą lotkę: trafienie w bieżący cel (S, D albo T — każde przesuwa o jeden cel) albo **Miss**, a na końcu zatwierdza turę. O tym, co jest trafieniem, decyduje **DartCounter** i jego ustawienia.
+
+**Różnica przy bullu:** w Autodarts na końcu wystarcza też zewnętrzny bull (25). DartCounter z „Finish by hitting the bullseye” zalicza tylko **50**. Skrypt wysyła lotki tak, jak padły, więc przy 25 Autodarts może już skończyć grę, a DartCounter dalej czeka na 50. Tak jest celowo: grę kończy bull 50, a DartCounter jest wynikiem odniesienia.
+
+Bez wpisu (z czytelnym błędem w panelu i w konsoli):
+
+- inna kolejność w Autodarts (20-1-Bull, Random-Bull) albo w DartCounter (20 → 1, losowa) — bull jest wtedy w innym miejscu po każdej stronie,
+- „Increase by segment” w DartCounter, segmenty „Single small/big”, tryb Autodarts „Outer Single”,
+- różne ustawienia po obu stronach (np. Hits 2 w Autodarts, Once w DartCounter),
+- gra Autodarts inna niż otwarta w DartCounter (X01 przy otwartym Around the Clock i odwrotnie).
+
+Źródło lokalne (`/api/state`, bez ustawień gry z Autodarts) też działa: lotki idą do Around the Clock, decyduje DartCounter.
 
 ## Fajerwerki przy bullseye (od 3.4.0, tylko 50 od 3.4.1)
 
@@ -124,6 +148,7 @@ Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski
 - Rozpoznanie gracza na ruchu przy 2+ graczach w trybie sumy jest przybliżone (dotyczy tylko końca bez podwójnej i potwierdzenia przerzucenia).
 - Klawiatura DartCounter z klikaną tarczą („dartboard”) nie jest obsługiwana w trybie lotka po lotce.
 - Przy źródle lokalnym w Autodarts v2+ lokalne API może zależeć od wersji Board Managera.
+- Around the Clock: obsługiwany tylko wariant 1 → 20 + bull (patrz sekcja „Around the Clock”); klawiatura DartCounter z klikaną tarczą i Omni nie są obsługiwane.
 - Dźwięki wymagają jednego kliknięcia na stronie DartCounter po jej otwarciu (zasady autoodtwarzania) oraz dostępu do `raw.githubusercontent.com`.
 
 ## Testy
@@ -133,7 +158,7 @@ npm install
 npm test
 ```
 
-Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50) oraz symulacje stron (jsdom): DartCounter (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika) i karta gry Autodarts.
+Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50, ustawienia i przyciski Around the Clock) oraz symulacje stron (jsdom): DartCounter X01 (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika), DartCounter Around the Clock i karta gry Autodarts.
 
 ## Licencja
 

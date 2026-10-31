@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.4.1
+// @version      3.5.0
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,14 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.4.1
+ * AD2DC 3.5.0
+ *
+ * Around the Clock (3.5.0): an Autodarts ATC game (or the local board) goes to DartCounter's Around the Clock
+ *   (/game/around-the-clock) dart by dart on its hit keyboard (S/D/T of the current target, bull, Miss).
+ *   DartCounter's own settings decide what is a hit (e.g. "Finish by hitting the bullseye" = only 50 at the end).
+ *   Supported: DartCounter order 1 -> 20 then bull, segments all/single/double/treble, 1-3 hits, one target per hit
+ *   ("Increase by segment" off); Autodarts order "1-20-Bull" with mode Full/Single/Double/Triple and matching hits.
+ *   Anything else is skipped with a clear log. ATC visits never go into an X01 match and the other way round.
  *
  * Bull fireworks (3.4.0, 3.4.1): a canvas overlay (pointer-events: none, upper part of the screen, gone in ~2.6 s)
  *   for the bullseye (50) only, plus a short fireworks sound (CC0, see README). The round speaker button switches
@@ -85,7 +92,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.4.1";
+  const VERSION = "3.5.0";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -310,7 +317,9 @@
         variant: String(d.variant || (d.settings && d.settings.variant) || ""),
         finished: d.finished === true || d.gameFinished === true,
         busted: turn ? turn.busted : undefined,
-        points: turn ? turn.points : undefined
+        points: turn ? turn.points : undefined,
+        settings: d.settings && typeof d.settings === "object"
+          ? { order: d.settings.order, mode: d.settings.mode, hits: d.settings.hits } : null
       };
     }
 
@@ -328,7 +337,7 @@
         if (sent.has(id)) return;
         sent.add(id);
         onVisit({ id, darts: t.darts.slice(0, 3), extraDarts: Math.max(0, t.darts.length - 3), reason, matchId: t.matchId, key: t.key,
-          busted: t.busted, points: t.points });
+          busted: t.busted, points: t.points, variant: t.variant, settings: t.settings });
       }
       return {
         current() { return cur; },
@@ -419,6 +428,53 @@
       };
     }
 
+    // ----- Around the Clock -----
+    // DartCounter ATC settings (localStorage "localAroundTheClockSettings", saved when the game starts).
+    const ATC_DEFAULTS = { bullOrBullseye: "bullseye", throwOrder: "low_to_high", numberSegment: "all", hit: "once", increaseGoalByMultiplier: false };
+    function atcDcConfig(stored) {
+      const c = Object.assign({}, ATC_DEFAULTS, stored && typeof stored === "object" ? stored : {});
+      const cfg = { throwout: c.bullOrBullseye, segment: c.numberSegment, hits: c.hit, order: c.throwOrder, bySegment: !!c.increaseGoalByMultiplier };
+      if (c.throwOrder !== "low_to_high") return Object.assign(cfg, { ok: false, why: "kolejno\u015b\u0107 \u201e" + c.throwOrder + "\u201d w DartCounter (obs\u0142ugiwana tylko 1 \u2192 20, potem bull)" });
+      if (cfg.bySegment) return Object.assign(cfg, { ok: false, why: "w DartCounter w\u0142\u0105czone \u201eIncrease by segment\u201d (obs\u0142ugiwany tylko 1 cel na trafienie)" });
+      if (!["all", "single", "double", "triple"].includes(c.numberSegment)) return Object.assign(cfg, { ok: false, why: "segmenty \u201e" + c.numberSegment + "\u201d w DartCounter nie s\u0105 obs\u0142ugiwane" });
+      if (!["bullseye", "bull", "all"].includes(c.bullOrBullseye)) return Object.assign(cfg, { ok: false, why: "bull \u201e" + c.bullOrBullseye + "\u201d w DartCounter nie jest obs\u0142ugiwany" });
+      if (!["once", "twice", "thrice"].includes(c.hit)) return Object.assign(cfg, { ok: false, why: "liczba trafie\u0144 \u201e" + c.hit + "\u201d w DartCounter nie jest obs\u0142ugiwana" });
+      return Object.assign(cfg, { ok: true, why: "" });
+    }
+    // Autodarts ATC settings vs DartCounter: order must be 1-20-Bull, mode and hits must match.
+    // (The bull itself is DartCounter's call: Autodarts may also finish on 25, DartCounter "bullseye" only on 50.)
+    const AD_MODE = { "Full": "all", "Single": "single", "Double": "double", "Triple": "triple" };
+    const AD_HITS = { 1: "once", 2: "twice", 3: "thrice" };
+    function atcAutodartsCheck(ad, dc) {
+      if (!ad) return { ok: true, why: "" }; // local board: no game settings, DartCounter decides
+      if (ad.order != null && ad.order !== "1-20-Bull") return { ok: false, why: "kolejno\u015b\u0107 Autodarts \u201e" + ad.order + "\u201d nie jest obs\u0142ugiwana (tylko 1-20-Bull)" };
+      if (ad.mode != null && !AD_MODE[ad.mode]) return { ok: false, why: "tryb Autodarts \u201e" + ad.mode + "\u201d nie jest obs\u0142ugiwany (Full, Single, Double, Triple)" };
+      if (ad.mode != null && AD_MODE[ad.mode] !== dc.segment) return { ok: false, why: "tryb Autodarts \u201e" + ad.mode + "\u201d \u2260 segmenty DartCounter \u201e" + dc.segment + "\u201d" };
+      if (ad.hits != null && AD_HITS[Number(ad.hits)] !== dc.hits) return { ok: false, why: "trafienia Autodarts " + ad.hits + " \u2260 DartCounter \u201e" + dc.hits + "\u201d" };
+      return { ok: true, why: "" };
+    }
+    // Which DartCounter ATC key a dart presses for the current target (DartCounter's own rules):
+    // target { kind: "number", n } or { kind: "bull" }. Returns "S" | "D" | "T" | "hit" | "bull" | "singlebull" | "bullseye" | "miss".
+    function atcKey(d, target, cfg) {
+      if (!d || d.ok === false || !target) return "miss";
+      const m = d.multiplier;
+      if (target.kind === "bull") {
+        if (d.number !== 25 || !(m === 1 || m === 2)) return "miss";
+        if (cfg.throwout === "bullseye") return m === 2 ? "bull" : "miss";
+        if (cfg.throwout === "bull") return m === 1 ? "bull" : "miss";
+        return m === 1 ? "singlebull" : "bullseye";
+      }
+      if (d.number !== target.n || !(m >= 1 && m <= 3)) return "miss";
+      if (cfg.segment === "all") return ["", "S", "D", "T"][m];
+      const need = { single: 1, double: 2, triple: 3 }[cfg.segment];
+      return m === need ? "hit" : "miss";
+    }
+    // Which DartCounter page may take a visit of this Autodarts variant ("x01" | "atc").
+    function visitFits(variant, page) {
+      if (!variant) return true; // local board or unknown: as before
+      return page === "atc" ? variant === "ATC" : variant === "X01";
+    }
+
     // ----- bull fireworks -----
     // "big" for the bullseye (50), "small" for the outer bull (25), else null.
     function bullKind(d) {
@@ -459,7 +515,8 @@
     }
 
     return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
-      dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts };
+      dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts,
+      atcDcConfig, atcAutodartsCheck, atcKey, visitFits };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -1078,7 +1135,7 @@
 
     async function publishVisit(v) {
       const item = { id: v.id, ts: now(), reason: v.reason, throws: v.darts.map(d => d.raw), labels: v.darts.map(d => d.label).join(" "),
-        busted: v.busted, points: v.points };
+        busted: v.busted, points: v.points, variant: v.variant || "", settings: v.settings || null };
       const list = (await gget(K.playVisits, [])) || [];
       if (!list.some(x => x.id === item.id)) list.push(item);
       while (list.length > 20) list.shift();
@@ -1288,7 +1345,9 @@
     })();
 
     // ----- page helpers -----
+    function atcPage() { return /^\/game\/around-the-clock\b/.test(location.pathname); }
     function matchPage() {
+      if (atcPage()) return { ok: true, atc: true, text: "TAK (Around the Clock)" };
       const p = location.pathname;
       if (/^\/game\/match\b/.test(p)) return { ok: true, text: "TAK (mecz X01 lokalny)" };
       if (/^\/(online-game|local-tournament-game)\/match\b/.test(p)) return { ok: true, text: "TAK (mecz X01 online/turniej)" };
@@ -1410,7 +1469,7 @@
       for (;;) {
         const v = await gget(K.leader, null);
         const t = now();
-        const wants = !!findTarget() || matchPage().ok;
+        const wants = !!findTarget() || matchPage().ok || !!atcKeys();
         // free lock, own lock, stale lock, or a tab without a match holds it while this tab has one
         if (!v || v.id === tabId || t - v.ts > CFG.leaderStaleMs || (wants && !v.game)) {
           await gset(K.leader, { id: tabId, ts: t, game: wants });
@@ -1502,7 +1561,8 @@
           const darts = (item.throws || []).map(t => { const d = Core.normalizeThrow(t); if (d) d.raw = t; return d; }).filter(Boolean);
           log("Z gry Autodarts: " + item.labels + " (" + item.reason + ", id " + item.id + ")" +
             (item.busted ? " | Autodarts: przerzucenie" : "") + (item.points != null ? " | punkty Autodarts: " + item.points : ""));
-          await onVisit({ id: "gra:" + item.id, darts, detected: darts, ov: {}, reason: "gra: " + item.reason, corrected: false });
+          await onVisit({ id: "gra:" + item.id, darts, detected: darts, ov: {}, reason: "gra: " + item.reason, corrected: false,
+            variant: item.variant || "", adSettings: item.settings || null });
         }
       } finally { checking = false; }
     }
@@ -1522,6 +1582,7 @@
       // local source only: game visits have a reliable id, identical consecutive visits there are real
       if (!/^gra:/.test(v.id) && last && last.labels === labels && now() - last.ts < CFG.dupWindowMs) { log("Pomijam duplikat tej samej tury (" + labels + ")"); return; }
       S.queue.push({ darts: v.darts, labels, total, ts: now(), id: v.id, detected: v.detected || v.darts, ov: v.ov || {},
+        variant: v.variant || "", adSettings: v.adSettings || null,
         corrected: !!v.corrected, readyAt: now() + S.sendDelay * 1000 });
       if (v.corrected) log("Tura z korekt\u0105: AutoDarts " + (v.detected || []).map(d => d.label).join(" ") + " \u2192 wysy\u0142am " + labels);
       renderStrip();
@@ -1535,6 +1596,32 @@
         const v = S.queue[0];
         if (now() - v.ts > CFG.visitMaxAgeMs) { S.queue.shift(); setErr("Tura " + v.labels + " czeka\u0142a za d\u0142ugo, nie wpisana."); continue; }
         if (now() < v.readyAt) { renderStrip(); continue; } // time to correct darts after the takeout
+        const page = atcPage() ? "atc" : "x01";
+        if (!Core.visitFits(v.variant, page)) {
+          S.queue.shift();
+          setErr("Tura " + v.labels + " nie wpisana: Autodarts gra \u201e" + v.variant + "\u201d, a DartCounter ma otwarte " +
+            (page === "atc" ? "Around the Clock" : "X01") + ". Uruchom w DartCounter t\u0119 sam\u0105 gr\u0119.", { tura: v.labels, wariant: v.variant, strona: location.pathname });
+          continue;
+        }
+        if (page === "atc") {
+          if (atcFinishedOrDialog()) {
+            if (waitingLogged !== v.id + "atcend") { waitingLogged = v.id + "atcend"; log("ATC: czekam (okno DartCounter albo gra sko\u0144czona)"); }
+            continue;
+          }
+          if (!atcKeys()) {
+            if (waitingLogged !== v.id + "atck") {
+              waitingLogged = v.id + "atck";
+              log(atcBoardKeyboard() ? "ATC: DartCounter ma klawiatur\u0119 z tarcz\u0105 (nieobs\u0142ugiwana). Wybierz zwyk\u0142\u0105 klawiatur\u0119 z przyciskami S/D/T i Miss."
+                : "ATC: czekam na klawiatur\u0119 DartCounter (np. rzuca DartBot)");
+            }
+            continue;
+          }
+          S.busy = true; renderStrip();
+          try { await enterAtcVisit(v); } catch (e) { setErr("Wpis ATC nie wyszed\u0142: " + errText(e)); }
+          S.queue.shift();
+          S.busy = false; renderStrip();
+          continue;
+        }
         if (!matchPage().ok && !findTarget()) {
           S.queue.shift();
           setErr("Tura " + v.labels + " nie wpisana: to nie jest strona meczu X01 (" + location.pathname + ")");
@@ -1684,6 +1771,98 @@
         return null;
       }, CFG.verifyMs);
       return done ? { ok: true, how: n + " lotk" + (n === 1 ? "a" : n < 5 ? "i" : "ek") + ", " + done } : { ok: false, aborted: true, how: "tura nie zosta\u0142a zatwierdzona w DartCounter" };
+    }
+
+    // ----- Around the Clock: DartCounter hit keyboard -----
+    function atcDcSettings() {
+      try { return JSON.parse(localStorage.getItem("localAroundTheClockSettings") || "null"); } catch (_) { return null; }
+    }
+    function atcInput() { return Array.from(document.querySelectorAll("app-around-the-clock-single-dart-input")).find(visible) || null; }
+    function atcBoardKeyboard() { return atcPage() && Array.from(document.querySelectorAll("app-single-dart-keyboard")).some(visible); }
+    // the hit keyboard: rows of S/D/T (current target), bull key(s), and undo + Miss (+ one hit key for single/double/treble)
+    function atcKeys() {
+      if (!atcPage()) return null;
+      const undo = Array.from(document.querySelectorAll("button.icon-key")).find(b => visible(b) && b.querySelector('app-icon[icon="undo_outline"]'));
+      if (!undo || !undo.parentElement || !undo.parentElement.parentElement) return null;
+      const lastRow = undo.parentElement, box = lastRow.parentElement;
+      const rowKeys = Array.from(lastRow.querySelectorAll("button.key")).filter(visible);
+      const miss = rowKeys[0] || null;
+      const all = Array.from(box.querySelectorAll("button.key")).filter(visible);
+      const sdt = {};
+      for (const b of all) { const m = /^([SDT])(\d{1,2})$/.exec(btnText(b)); if (m && b.parentElement !== lastRow) sdt[m[1]] = { b, n: Number(m[2]) }; }
+      const bullRow = Array.from(box.children).find(r => r !== lastRow && Array.from(r.querySelectorAll("button.key")).some(b => !/^[SDT]\d{1,2}$/.test(btnText(b))));
+      const bullKeys = bullRow ? Array.from(bullRow.querySelectorAll("button.key")).filter(visible) : [];
+      const hitKey = rowKeys[1] || null; // single/double/treble segments: one key with the target label
+      return { box, miss, sdt, bullKeys, hitKey };
+    }
+    function atcTarget(k, cfg) {
+      if (!k) return null;
+      if (k.bullKeys.length) return { kind: "bull" };
+      if (cfg.segment === "all") { const any = k.sdt.S || k.sdt.D || k.sdt.T; return any ? { kind: "number", n: any.n } : null; }
+      if (k.hitKey) { const m = /(\d{1,2})$/.exec(btnText(k.hitKey)); if (m) return { kind: "number", n: Number(m[1]) }; }
+      return null;
+    }
+    function atcSlots() {
+      const inp = atcInput();
+      return inp ? Array.from(inp.querySelectorAll('[dctypography="bulevar-40"]')).filter(visible).map(e => btnText(e)) : [];
+    }
+    function atcFinishedOrDialog() {
+      return Array.from(document.querySelectorAll("app-around-the-clock-local-end-screen-dialog, app-local-end-screen, ion-modal")).some(visible);
+    }
+    function atcButtonFor(k, key) {
+      if (key === "miss") return k.miss;
+      if (key === "S" || key === "D" || key === "T") return k.sdt[key] ? k.sdt[key].b : null;
+      if (key === "hit") return k.hitKey;
+      if (key === "bull") return k.bullKeys[0] || null;
+      if (key === "singlebull") return k.bullKeys.length === 2 ? k.bullKeys[0] : null;
+      if (key === "bullseye") return k.bullKeys.length === 2 ? k.bullKeys[1] : null;
+      return null;
+    }
+
+    // Each Autodarts dart -> one DartCounter ATC key (hit on the current target or Miss), then the turn is submitted.
+    async function enterAtcVisit(v) {
+      const cfg = Core.atcDcConfig(atcDcSettings());
+      if (!cfg.ok) { setErr("ATC: tura " + v.labels + " pomini\u0119ta: " + cfg.why + ".", { tura: v.labels, ustawieniaDC: cfg }); return; }
+      const chk = Core.atcAutodartsCheck(v.adSettings, cfg);
+      if (!chk.ok) { setErr("ATC: tura " + v.labels + " pomini\u0119ta: " + chk.why + ".", { tura: v.labels, autodarts: v.adSettings, dartcounter: cfg }); return; }
+      const pre = atcSlots().length;
+      if (pre > 0) { setErr("ATC: w DartCounter s\u0105 ju\u017c wpisane lotki tej tury (" + pre + "). Doko\u0144cz tur\u0119 r\u0119cznie.", { tura: v.labels }); return; }
+      await gset(K.lastEntered, { id: v.id, labels: v.labels, ts: now() });
+      const entered = (await gget(K.enteredIds, [])) || [];
+      entered.push(v.id); while (entered.length > 50) entered.shift();
+      await gset(K.enteredIds, entered);
+      log("ATC: wpisuj\u0119 " + v.labels + " (bull: " + cfg.throwout + ", segmenty: " + cfg.segment + ", trafienia: " + cfg.hits + ")");
+      const keys = [];
+      let n = 0;
+      for (const d of v.darts) {
+        const k = atcKeys();
+        const target = atcTarget(k, cfg);
+        if (!k || !target) { log("ATC: koniec cel\u00f3w w DartCounter, dalsze lotki pomini\u0119te"); break; }
+        const key = Core.atcKey(d, target, cfg);
+        const btn = atcButtonFor(k, key);
+        if (!btn) { setErr("ATC: brak przycisku \u201e" + key + "\u201d dla " + d.label + " (cel " + (target.kind === "bull" ? "bull" : target.n) + ").", { tura: v.labels }); return; }
+        btn.click();
+        n++; keys.push(d.label + "\u2192" + (key === "miss" ? "Miss" : key));
+        const r = await waitFor(() => {
+          if (atcFinishedOrDialog() || !atcKeys()) return "end";
+          const sl = atcSlots();
+          if (sl.length === n) return "ok";
+          if (sl.length === 0) return "submitted"; // auto-submit after the 3rd dart / finish
+          return null;
+        }, 1500);
+        if (!r) { setErr("ATC: DartCounter nie przyj\u0105\u0142 lotki " + n + " (" + d.label + ").", { tura: v.labels }); return; }
+        if (r !== "ok") break;
+      }
+      // submit whenever darts of this turn wait (also after the finishing bull, when DartCounter shows no target keys)
+      if (atcSlots().length > 0 && !atcFinishedOrDialog()) {
+        const inp = atcInput(), sub = inp && inp.querySelector("button.submit-button");
+        if (!sub) { setErr("ATC: brak przycisku wysy\u0142ki tury w DartCounter.", { tura: v.labels }); return; }
+        sub.click();
+      }
+      const done = await waitFor(() => (atcFinishedOrDialog() ? "koniec gry / okno" : !atcKeys() ? "kolej przeciwnika" : atcSlots().length === 0 ? "tura zatwierdzona" : null), CFG.verifyMs);
+      S.lastEntry = { score: v.labels, labels: v.labels, ok: !!done, how: done || "tura nie zatwierdzona", ts: now() };
+      if (done) { log("ATC: wpisano " + keys.join(", ") + " \u2713 (" + done + ")"); S.err = ""; }
+      else setErr("ATC: tura " + v.labels + " nie zosta\u0142a zatwierdzona w DartCounter. Kliknij \u201eSubmit\u201d r\u0119cznie (klawiatura DartCounter: " + keyboardSetting() + ").", { tura: v.labels });
     }
 
     async function enterVisit(v, t) {
@@ -1837,6 +2016,8 @@
         ["Wersja", VERSION],
         ["Most", S.enabled ? (S.leader ? "W\u0141\u0104CZONY" : "W\u0141\u0104CZONY, inna karta aktywna") : "WY\u0141\u0104CZONY"],
         ["Strona meczu", mp.text],
+        ...(mp.atc ? [["ATC (DartCounter)", (() => { const c = Core.atcDcConfig(atcDcSettings());
+          return c.ok ? "1\u219220, bull: " + c.throwout + ", segmenty: " + c.segment + ", trafienia: " + c.hits : "NIEOBS\u0141UGIWANE: " + c.why; })()]] : []),
         ...(S.source === "play" ? [
           ["\u0179r\u00f3d\u0142o", "gra Autodarts (karta play.autodarts)"],
           ["Karta gry", playTabText()],
@@ -1860,7 +2041,12 @@
       ];
       ui.set("rows", rows);
       const kb = keyboardSetting();
-      ui.set("hint", !mp.ok
+      const atcCfg = mp.atc ? Core.atcDcConfig(atcDcSettings()) : null;
+      ui.set("hint", atcCfg && !atcCfg.ok
+        ? "Around the Clock: " + atcCfg.why + ". Ustaw w DartCounter: Play from 1 to 20, Finish by hitting the bullseye, bez \u201eIncrease by segment\u201d."
+        : mp.atc && atcBoardKeyboard() ? "Around the Clock: wybierz w DartCounter klawiatur\u0119 z przyciskami S/D/T i Miss (klikana tarcza nie jest obs\u0142ugiwana)."
+        : mp.atc ? ""
+        : !mp.ok
         ? "Uruchom mecz X01: Graj lokalnie \u2192 Mecz (X01) \u2192 Start. Adres meczu: app.dartcounter.net/game/match"
         : t && t.mode === "unsupported"
           ? "Ta klawiatura DartCounter nie jest obs\u0142ugiwana (" + kb + "). Wybierz Single/Double/Treble, numeryczn\u0105 albo pole \u201eWpisz wynik\u201d."
@@ -1875,6 +2061,7 @@
       else if (S.err || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + " b\u0142\u0105d"; }
       else if (S.source === "play" && !playTabFresh()) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz gr\u0119 Autodarts"; }
       else if (!mp.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz mecz X01"; }
+      else if (atcCfg && !atcCfg.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": ATC nieobs\u0142ugiwane"; }
       else if (S.lastEntry) pill = "AD2DC " + VERSION + " \u2713 " + S.lastEntry.score;
       ui.set("dot", dot);
       ui.set("pill", pill);
