@@ -56,23 +56,35 @@ function dialogOptions(restBefore, score) {
 // mode "darts": per-dart keyboard (autoSubmit off). mode "sum": score field + Enter.
 function makeDC(store, opts) {
   const dom = new JSDOM(`<!doctype html><html><body>
-    <app-remaining-score id="r0">501</app-remaining-score><app-remaining-score id="r1">501</app-remaining-score>
+    <div id="board"><app-remaining-score id="r0">501</app-remaining-score><app-remaining-score id="r1">501</app-remaining-score>
+    <app-in-game-interim-score id="i0"><div><span>0</span></div></app-in-game-interim-score><app-in-game-interim-score id="i1"><div><span>0</span></div></app-in-game-interim-score></div>
     <div id="slot"></div><div id="dlg"></div></body></html>`,
   { url: "https://app.dartcounter.net/game/match", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window, doc = w.document;
   w.Element.prototype.getClientRects = function () { return this.isConnected && !this.closest("[hidden]") ? [1] : []; };
   w.localStorage.setItem("inGameKeyboard", opts.mode === "darts" ? "single" : "numbers");
   const g = { rest: [opts.rest || 501, opts.botRest || 501], turns: [], dialogs: [], darts: [], temp: null, busted: false, mult: 1,
-    legs: 0, botTurns: 0, warns: [], rejected: [] };
+    legs: 0, won: [0, 0], botTurns: 0, warns: [], rejected: [], logs: [] };
   const render = () => { doc.getElementById("r0").textContent = String(g.rest[0]); doc.getElementById("r1").textContent = String(g.rest[1]); };
   render();
 
-  function newLeg() { g.legs++; g.rest = [501, 501]; render(); }
+  // new leg: winner's legs + 1, rests back to the start (opts.handicap: start of player 2);
+  // opts.gapMs: the scoreboard is gone for a moment between the legs (DartCounter redraw)
+  function newLeg(winner) {
+    g.legs++; g.won[winner]++;
+    const apply = () => {
+      g.rest = [501, opts.handicap || 501]; render();
+      doc.getElementById("i0").querySelector("span").textContent = String(g.won[0]);
+      doc.getElementById("i1").querySelector("span").textContent = String(g.won[1]);
+    };
+    if (opts.gapMs) { const b = doc.getElementById("board"); b.setAttribute("hidden", ""); setTimeout(() => { apply(); b.removeAttribute("hidden"); }, opts.gapMs); }
+    else apply();
+  }
   function dartbotTurn() {
     remove();
     setTimeout(() => {
       g.botTurns++;
-      if (opts.botFinishOn && g.botTurns === opts.botFinishOn) { g.rest[1] = 0; render(); setTimeout(() => { newLeg(); add(); }, 200); return; }
+      if (opts.botFinishOn && g.botTurns === opts.botFinishOn) { g.rest[1] = 0; render(); setTimeout(() => { newLeg(1); add(); }, 200); return; }
       g.rest[1] -= 45; render(); add();
     }, 900);
   }
@@ -86,7 +98,7 @@ function makeDC(store, opts) {
     const commit = (ans) => {
       g.turns.push({ score, darts, why, ans });
       g.darts = []; g.temp = null; g.busted = false;
-      if (finish) { g.rest[0] = 0; render(); newLeg(); dartbotTurn(); return; }
+      if (finish) { g.rest[0] = 0; render(); newLeg(0); dartbotTurn(); return; }
       g.rest[0] -= score; render(); dartbotTurn();
     };
     if (!opt) { commit(null); return; }
@@ -178,7 +190,7 @@ function makeDC(store, opts) {
   if (opts.resetMode) w.GM_setValue("ad2dc3_reset_mode", opts.resetMode);
   w.GM_info = { scriptHandler: "FakeMonkey", version: "1" };
   w.GM_xmlhttpRequest = d => setTimeout(() => d.onerror({ error: "test: brak API" }), 5);
-  w.console.log = () => {};
+  w.console.log = (...a) => { g.logs.push(a.join(" ")); };
   w.console.warn = (...a) => { g.warns.push(a); };
   w.eval(SCRIPT);
   const panel = () => {
@@ -341,6 +353,27 @@ async function scenario(mode, rest, visits, opts) {
     publish(s.store, "T20 T20 T20");
     await sleep(5000);
     check("after a failed reset the next visit is entered", s.p.g.turns.length === 2 && s.p.g.turns[1].score === 180, s.p.g.turns);
+    s.stop();
+  }
+
+  // 3.5.2: lost leg while DartCounter redraws the scoreboard between legs (scores gone for a moment)
+  {
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, gapMs: 900 });
+    await sleep(2500);
+    const cmd = s.store.get("ad2dc3_reset_cmd");
+    check("lost leg, scoreboard gone for 0.9 s between legs -> reset order, won = false", cmd && cmd.kind === "leg" && cmd.won === false, cmd);
+    check("diagnostic log: leg end detected + reason won/lost + order", s.p.g.logs.some(l => /Wykryto koniec lega/.test(l)) &&
+      s.p.g.logs.some(l => /koniec lega \(przegrany\).*bez zako\u0144czenia/.test(l)) && s.p.g.logs.some(l => /polecenie .* do karty gry/.test(l)),
+      s.p.g.logs.filter(l => /lega|Reset/.test(l)));
+    s.stop();
+  }
+
+  // 3.5.2: handicap (rests not equal at the new leg) -> the legs counter still shows the leg end
+  {
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, handicap: 301 });
+    await sleep(2500);
+    const cmd = s.store.get("ad2dc3_reset_cmd");
+    check("lost leg with a handicap start (501/301) -> legs counter gives the leg end, reset order", cmd && cmd.won === false, { cmd, logs: s.p.g.logs.filter(l => /leg/i.test(l)) });
     s.stop();
   }
 

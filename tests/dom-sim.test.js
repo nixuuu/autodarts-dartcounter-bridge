@@ -278,7 +278,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
       sr0.getElementById("snd").getAttribute("aria-label") === sr0.getElementById("snd").title, sr0.getElementById("snd").title);
     send(6, [seg(2, 0)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3), seg(25, 2)]); await sleep(1500);
     check(tag + ": speaker off -> miss, T20 and bullseye silent, no fireworks", dc.audio.plays.length === 8 && !fwEl(), { plays: dc.audio.plays, fw: !!fwEl() });
-    check(tag + ": pill shows version", /3\.5\.1/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
+    check(tag + ": pill shows version", /3\.5\.2/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
     // page reload: a new DartCounter tab with the same userscript storage keeps the muted state
     dc.w.close(); await sleep(300);
     const dc2 = makePage("none", { store, source: "play", audio: true });

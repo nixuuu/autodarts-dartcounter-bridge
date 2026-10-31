@@ -134,20 +134,42 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check("new match: the tab goes to it", pg.nav.length === 1, pg.nav);
   }
 
-  // 4) a lobby cannot be made -> nothing deleted, ack fail with the reason
+  // 4) no lobby from the running match -> "Leave match" (surrender), then the lobby from the finished match (Play again)
+  {
+    const store = makeStore();
+    let pg, left = false;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/restart") return { ok: false, status: 400, err: "HTTP 400" };
+      if (p === "/lobbies/from-match/m1") return left ? { ok: true, status: 200, data: { id: "L2" } } : { ok: false, status: 409, err: "HTTP 409 match not finished" };
+      if (p === "/matches/m1/surrender") { left = true; setTimeout(() => pg.send(state({ round: 3, gameScores: [380], finished: true })), 100); return { ok: true, status: 200 }; }
+      if (p === "/lobbies/L2/start") return { ok: true, status: 200, data: { id: "m3" } };
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(state({ round: 3, gameScores: [380] }));
+    order(store);
+    await sleep(3500);
+    check("from-match refused -> surrender, from-match again, start (no DELETE)",
+      pg.calls.join("|") === "POST /matches/m1/games/restart|POST /lobbies/from-match/m1|POST /matches/m1/surrender|POST /lobbies/from-match/m1|POST /lobbies/L2/start", pg.calls);
+    check("surrender path: ack ok, tab goes to the new match", ack(store).state === "ok" && /opuszczony/.test(ack(store).how) && pg.nav.length === 1, { ack: ack(store), nav: pg.nav });
+    check("every API step is in the game tab log", pg.logs.filter(l => /Reset API: /.test(l)).length === 5 && pg.logs.some(l => /Reset: polecenie .* stan|Reset: polecenie .*runda 3/.test(l)), pg.logs.filter(l => /Reset/.test(l)));
+  }
+
+  // 4b) nothing works -> clear failure, nothing deleted
   {
     const store = makeStore();
     const pg = makePlay(store, (m, p) => {
       if (p === "/matches/m1/games/restart") return { ok: false, status: 400, err: "HTTP 400" };
       if (p === "/lobbies/from-match/m1") return { ok: false, status: 409, err: "HTTP 409 match not finished" };
+      if (p === "/matches/m1/surrender") return { ok: false, status: 403, err: "HTTP 403" };
       return { ok: true, status: 200 };
     });
     await sleep(1800);
     pg.send(state({ round: 3, gameScores: [380] }));
     order(store);
     await sleep(3000);
-    check("from-match refused -> the running match is NOT deleted", !pg.calls.some(c => /^DELETE/.test(c)), pg.calls);
-    check("from-match refused -> ack fail with reason", ack(store).state === "fail" && /lobby/.test(ack(store).how), ack(store));
+    check("all refused -> the running match is NOT deleted", !pg.calls.some(c => /^DELETE/.test(c)), pg.calls);
+    check("all refused -> ack fail with reason", ack(store).state === "fail" && /zako\u0144czy\u0107 meczu/.test(ack(store).how), ack(store));
   }
 
   // 5) login missing -> no fallback that ends the match
@@ -204,6 +226,32 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     order(store);
     await sleep(1500);
     check("not X01 -> ack fail, no request", pg.calls.length === 0 && ack(store).state === "fail" && /X01/.test(ack(store).how), ack(store));
+  }
+
+  // 9) Around the Clock: Autodarts game over (finished on 25) -> next game; an X01 order on an ATC game still fails
+  {
+    const store = makeStore();
+    let pg;
+    const atc = o => state(Object.assign({ variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, gameScores: [21] }, o));
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(atc({ leg: 1, gameScores: [0], round: 1 })), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(atc({ round: 9, turns: [{ round: 9, playerId: "p1", throws: [T(20, 1)] }] }));
+    pg.send(atc({ round: 9, finished: true, turns: [{ round: 9, playerId: "p1", throws: [T(20, 1), T(25, 1)] }] }));
+    await sleep(300);
+    store.set("ad2dc3_reset_cmd", { id: "dc-atc1", ts: Date.now(), kind: "atc", won: false });
+    await sleep(2500);
+    check("ATC finished -> POST games/next, ack ok", pg.calls.join("|") === "POST /matches/m1/games/next" && ack(store).state === "ok" && /ATC/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+    pg.send(atc({ leg: 1, round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(25, 2)] }] }));
+    pg.send(atc({ leg: 1, round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }] }));
+    await sleep(300);
+    const v = visits(store);
+    check("ATC: darts after the new game are published (new id)", v.length === 2 && v[1].labels === "BULL" && v[1].id !== v[0].id && v[0].finished === true, v);
+    order(store, "leg");
+    await sleep(1500);
+    check("X01 order (leg end) on an ATC game -> fail, nothing called", pg.calls.length === 1 && ack(store).state === "fail" && /X01/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
   }
 
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");

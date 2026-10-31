@@ -513,6 +513,14 @@ test("no leg end: undo, normal turns, other start values", () => {
   assert.equal(Core.legEndFromRests([40, 60], [301, 301], 501), false);
   assert.equal(Core.legEndFromRests([40, 60], [501], 501), false);
 });
+test("legs counter: + 1 for one player is a leg end, a decrease (undo) is not", () => {
+  assert.equal(Core.interimLegEnd([[0], [1]], [[0], [2]]), true);
+  assert.equal(Core.interimLegEnd([[1, 2], [0, 1]], [[2, 0], [0, 0]]), true); // set won: sets + 1, legs back to 0
+  assert.equal(Core.interimLegEnd([[0], [2]], [[0], [1]]), false);
+  assert.equal(Core.interimLegEnd([[0, 2], [0, 1]], [[0, 0], [0, 1]]), false); // legs to 0 without a set
+  assert.equal(Core.interimLegEnd([[0], [1]], [[0], [1]]), false);
+  assert.equal(Core.interimLegEnd([[0]], [[0], [1]]), false);
+});
 test("resetWanted for every setting", () => {
   assert.deepEqual(["leg", "lost", "match", "off"].map(m => [Core.resetWanted(m, "leg", true), Core.resetWanted(m, "leg", false), Core.resetWanted(m, "match", true), Core.resetWanted(m, "match", false)]),
     [[true, true, true, true], [false, true, false, true], [false, false, true, true], [false, false, false, false]]);
@@ -530,6 +538,18 @@ test("isFreshLeg", () => {
   assert.equal(Core.isFreshLeg(st({ gameScores: [441, 501] })), false);
   assert.equal(Core.isFreshLeg(st({ turns: [{ throws: [{}] }] })), false);
   assert.equal(Core.isFreshLeg(st({ gameFinished: true })), false);
+});
+test("isFreshLeg Around the Clock: not finished, no darts yet", () => {
+  assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [{ throws: [] }], finished: false }), true);
+  assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [{ throws: [{}] }], finished: false }), false);
+  assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [], finished: true }), false);
+});
+test("match tracker: a visit that ends the Autodarts game carries finished", () => {
+  const out = [];
+  const tr = Core.createMatchTracker(v => out.push(v));
+  const m = (throws, finished) => Core.parseMatch({ id: "a1", variant: "ATC", turns: [{ round: 9, throws }], round: 9, players: [], player: 0, finished });
+  tr.update(m([], false)); tr.update(m([oldT("S20", 20, "Single", 1)], false)); tr.update(m([oldT("S20", 20, "Single", 1), oldT("S25", 25, "Single", 1)], true));
+  assert.equal(out.length, 1); assert.equal(out[0].finished, true);
 });
 test("match tracker epoch: after reset the repeated turn keys are new visits", () => {
   const out = [];

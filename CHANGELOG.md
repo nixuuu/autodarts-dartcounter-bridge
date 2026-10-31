@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.5.2
+
+- Fix: after a lost DartCounter leg, Autodarts was not reset. The leg end was only seen when two consecutive readings of the rests went straight to the start score. It was missed when DartCounter redrew the scoreboard between legs (the rests gone for a moment) and when the players start from different scores (handicap).
+  - Rests are now compared with the last complete reading.
+  - DartCounter's legs counter (+ 1 for a player, or a won set) is a second signal. An undo never counts as a leg end.
+- Reset on the Autodarts game tab is more robust. When no new match can be made from the running one, the script leaves the match ("Leave", like the app's button) and starts a new one from it ("Play again").
+- Around the Clock only: when Autodarts ends its game (e.g. on the outer bull 25), the game tab starts the Autodarts game again, so the next darts keep coming to DartCounter.
+  - This applies when DartCounter still plays: "Finish by hitting the bullseye" counts 25 as a miss.
+  - It uses the next game (like the app's Next button) or a new match with the same settings.
+  - Nothing happens when both sides finished on 50, or with "Reset Autodarts: wyłączony".
+  - X01 is unchanged by this.
+- Diagnostic log lines (Kopiuj log):
+  - DartCounter tab: leg / match end detected (which signal), won or lost and why, the setting, the order to the game tab and its answer.
+  - Game tab: the order received, the match state, the plan, and every Autodarts API step with its answer.
+
 ## 3.5.1
 
 - Fix: the script now answers DartCounter's darts dialog itself ("Darts used on a double" / "Darts used for checkout"). DartCounter opens it after a checkout, after a bust, and after a visit that leaves 50 or less.

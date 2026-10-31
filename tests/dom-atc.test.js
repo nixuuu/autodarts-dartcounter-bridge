@@ -90,9 +90,9 @@ function makeAtcPage(store, opts) {
   return { w, doc, g, api };
 }
 
-function publish(store, id, throws, variant, settings) {
+function publish(store, id, throws, variant, settings, finished) {
   const list = store.map.has("ad2dc3_play_visits") ? JSON.parse(store.map.get("ad2dc3_play_visits")) : [];
-  list.push({ id, ts: Date.now(), reason: "następna tura", throws, labels: "", variant, settings });
+  list.push({ id, ts: Date.now(), reason: finished ? "koniec lega/meczu" : "następna tura", throws, labels: "", variant, settings, finished: !!finished });
   store.map.set("ad2dc3_play_visits", JSON.stringify(list));
 }
 const heartbeat = store => setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/a1" })), 400);
@@ -137,6 +137,42 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check("ATC finish: no errors, no alerts", p.g.alerts === 0 && p.g.warns.length === 0, { alerts: p.g.alerts, warns: p.g.warns });
     publish(store, "a2/0.0.2.0", [seg(1, 1)], "ATC", ATC); await sleep(2000);
     check("ATC finish: nothing more after the end", p.g.turns.length === 1 && p.g.alerts === 0, p.g);
+    clearInterval(hb); p.w.close();
+  }
+
+  // 3.5.2: Autodarts closes its ATC game on the outer bull (25); DartCounter (bullseye) takes 25 as a miss and plays on
+  // -> order to the game tab to start the Autodarts game again; the next darts (50) finish DartCounter
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    const p = makeAtcPage(store, { startAt: 19 });
+    await sleep(1500);
+    publish(store, "a3/0.0.1.0", [seg(20, 1), seg(25, 1)], "ATC", ATC, true); await sleep(4500);
+    check("ATC: S20 hit, 25 = Miss, DartCounter not finished", JSON.stringify(p.g.turns[0]) === '["S20","Miss","Miss"]' && !p.g.finished, p.g);
+    const cmd = store.map.has("ad2dc3_reset_cmd") ? JSON.parse(store.map.get("ad2dc3_reset_cmd")) : null;
+    check("ATC: Autodarts finished on 25 -> order to start the Autodarts game again (kind atc)", cmd && cmd.kind === "atc", cmd);
+    publish(store, "a3/0.0.1.0~e1", [seg(25, 2)], "ATC", ATC); await sleep(3500);
+    check("ATC: after the restart the bullseye finishes DartCounter", p.g.finished && JSON.stringify(p.g.turns[1]) === '["D25"]', p.g.turns);
+    clearInterval(hb); p.w.close();
+  }
+
+  // Autodarts and DartCounter both finished (bullseye) -> no order
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    const p = makeAtcPage(store, { startAt: 19 });
+    await sleep(1500);
+    publish(store, "a4/0.0.1.0", [seg(20, 1), seg(25, 2)], "ATC", ATC, true); await sleep(5000);
+    check("ATC: both finished on 50 -> no restart order", p.g.finished && !store.map.has("ad2dc3_reset_cmd"), { g: p.g, cmd: store.map.get("ad2dc3_reset_cmd") });
+    clearInterval(hb); p.w.close();
+  }
+
+  // setting "off" -> no order
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    store.map.set("ad2dc3_reset_mode", JSON.stringify("off"));
+    const p = makeAtcPage(store, { startAt: 19 });
+    await sleep(1500);
+    publish(store, "a5/0.0.1.0", [seg(20, 1), seg(25, 1)], "ATC", ATC, true); await sleep(5000);
+    check("ATC: Reset Autodarts off -> no restart order", !p.g.finished && !store.map.has("ad2dc3_reset_cmd"), store.map.get("ad2dc3_reset_cmd"));
     clearInterval(hb); p.w.close();
   }
 
