@@ -33,7 +33,7 @@ function state(o) {
     player: 0, round: 1, set: 0, leg: 0, finished: false, gameFinished: false, gameScores: [501], turns: [{ round: 1, playerId: "p1", throws: [] }] }, o);
 }
 
-function makePlay(store, api, onCmd) {
+function makePlay(store, api, onCmd, opt) {
   const vc = new VirtualConsole();
   const nav = [];
   vc.on("jsdomError", e => { if (/navigation/.test(e.message)) nav.push(e.message); else console.error(e); }); // location.assign to the new match
@@ -51,7 +51,8 @@ function makePlay(store, api, onCmd) {
     calls.push(d.method + " " + d.path);
     if (onCmd) onCmd(d);
     Promise.resolve(api(d.method, d.path, d.body)).then(res => {
-      setTimeout(() => w.dispatchEvent(new w.MessageEvent("message", { data: Object.assign({ __ad2dcRes: 1, rid: d.rid }, res), source: w })), 20);
+      setTimeout(() => w.dispatchEvent(new w.MessageEvent("message", { data: Object.assign({ __ad2dcRes: 1, rid: d.rid }, res),
+        source: opt && "source" in opt ? opt.source : w, origin: "https://play.autodarts.com" })), 20);
     });
   });
   store.install(w);
@@ -253,6 +254,71 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     order(store, "leg");
     await sleep(1500);
     check("X01 order (leg end) on an ATC game -> fail, nothing called", pg.calls.length === 1 && ack(store).state === "fail" && /X01/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+  }
+
+  // 11) 3.5.4 X01: won leg in Autodarts (checkout, score 0) -> next leg by itself after the visit went out
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(state({ leg: 1 })), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(state({ round: 7, gameScores: [40], turns: [{ round: 7, playerId: "p1", throws: [T(20, 1)] }] }));
+    pg.send(state({ round: 7, gameScores: [0], gameFinished: true, turns: [{ round: 7, playerId: "p1", throws: [T(20, 1), T(10, 2)] }] }));
+    await sleep(500);
+    check("won leg: the checkout visit goes out at once", visits(store).length === 1 && visits(store)[0].labels === "S20 D10", visits(store));
+    check("won leg: no request before 2.5 s", pg.calls.length === 0, pg.calls);
+    await sleep(3000);
+    check("won leg: POST games/next by itself", pg.calls.join("|") === "POST /matches/m1/games/next", pg.calls);
+    check("won leg: result for the DartCounter panel", (store.get("ad2dc3_auto_next") || {}).ok === true, store.get("ad2dc3_auto_next"));
+    pg.send(state({ leg: 1, round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(20, 3)] }], gameScores: [441] }));
+    pg.send(state({ leg: 1, round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [441] }));
+    await sleep(300);
+    check("next leg: its first visit is published", visits(store).length === 2 && visits(store)[1].labels === "T20", visits(store));
+  }
+  // won leg and the reset order from DartCounter at the same time -> one games/next only
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(state({ leg: 1 })), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(state({ round: 7, gameScores: [40], turns: [{ round: 7, playerId: "p1", throws: [T(20, 1)] }] }));
+    pg.send(state({ round: 7, gameScores: [0], gameFinished: true, turns: [{ round: 7, playerId: "p1", throws: [T(20, 1), T(10, 2)] }] }));
+    await sleep(2000);
+    order(store, "leg");
+    await sleep(4000);
+    check("won leg + reset order -> games/next once", pg.calls.filter(c => /games\/next/.test(c)).length === 1, pg.calls);
+  }
+  // setting off -> no auto next
+  {
+    const store = makeStore();
+    store.set("ad2dc3_reset_mode", "off");
+    const pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    await sleep(2500);
+    pg.send(state({ round: 7, gameScores: [40], turns: [{ round: 7, playerId: "p1", throws: [T(20, 1)] }] }));
+    pg.send(state({ round: 7, gameScores: [0], gameFinished: true, turns: [{ round: 7, playerId: "p1", throws: [T(20, 1), T(10, 2)] }] }));
+    await sleep(3500);
+    check("Reset Autodarts off -> no auto next leg", pg.calls.length === 0, pg.calls);
+  }
+  // the page helper answers with another source (Tampermonkey: window is a proxy) -> answers still taken
+  {
+    const store = makeStore();
+    const vc = null;
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/restart") { setTimeout(() => pg.send(state({})), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    }, null, { source: null });
+    await sleep(1800);
+    pg.send(state({ round: 3, gameScores: [380] }));
+    order(store);
+    await sleep(2500);
+    check("helper answer without source === window (sandbox) -> ack ok", ack(store).state === "ok", ack(store));
   }
 
   // 10) 3.5.3 Around the Clock, mode Full: 25 on the bull target -> corrected in Autodarts to a miss (PATCH throws)

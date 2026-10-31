@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.4
+
+- Fix (X01): the Autodarts reset after a DartCounter leg now works in Tampermonkey. Real cause, present since 3.5.1:
+  - The game tab ignored every answer from its page helper. It checked `ev.source === window`, but in a userscript sandbox `window` is a proxy, so the check never matched.
+  - The requests reached Autodarts, but the script never saw the answers, and the reset ran into timeouts.
+  - Messages are now matched by page origin and request id.
+  - Checked in WebKit and Chromium with a sandbox-like `window`.
+- New (X01): a won leg in Autodarts (checkout to 0) goes on to the next leg by itself, 2.5 s after the checkout visit went out. When the Autodarts match is over, a new match starts. Off with "Reset Autodarts: wyłączony". The result is shown in the DartCounter panel.
+- Around the Clock and the rest of X01 unchanged.
+
 ## 3.5.3
 
 - Around the Clock only: Autodarts now counts the outer bull (25) as a miss on the bull target and finishes only on the bullseye (50), like DartCounter with "Finish by hitting the bullseye".

@@ -150,6 +150,7 @@ Jak to działa:
   - Leg w toku → leg od nowa (`games/restart`).
   - Gdy to nie zadziała albo mecz w Autodarts jest skończony → nowy mecz z tymi samymi ustawieniami. Niedokończony mecz jest przerywany albo opuszczany (jak przycisk „Opuść” w Autodarts). Karta przechodzi do nowego meczu.
 - Każdy krok jest w logu (od 3.5.2). W karcie DartCountera: wykryty koniec lega, wygrany czy przegrany i dlaczego, polecenie i odpowiedź. W karcie gry: stan meczu, plan i każda odpowiedź API Autodarts. Przy zgłoszeniu dołącz „Kopiuj log” z obu kart.
+- Po wygranym legu (od 3.5.4): gdy Twoja tura zakończy leg w Autodarts (wynik 0), Autodarts sam przechodzi do kolejnego lega, 2,5 s po wysłaniu tury do DartCountera. Gdy mecz w Autodarts się skończył, zaczyna nowy. Działa niezależnie od DartCountera, wyłącza go tylko „Reset Autodarts: wyłączony”. Wynik jest w wierszu „Reset Autodarts” w panelu DartCountera.
 - Lotki tury w toku nigdy nie przepadają. Gdy w Autodarts są już lotki nowej tury, reset czeka, aż ta tura trafi do DartCountera.
 - Tury po resecie dostają nowe ID, więc nie są odrzucane jako duplikaty.
 - Gdy reset się nie uda (brak karty gry, brak logowania, Autodarts odmówi), panel DartCountera pokazuje czerwony komunikat. Wtedy zacznij nową grę X01 w Autodarts ręcznie. Tury dalej się wpisują.

@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.5.3
+// @version      3.5.4
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,13 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.5.3
+ * AD2DC 3.5.4
+ *
+ * 3.5.4 (X01): the Autodarts reset never worked in Tampermonkey: the game tab dropped every answer of its page helper
+ *   (it checked ev.source === window, but a userscript's `window` is a sandbox proxy). Requests reached Autodarts, the
+ *   answers did not reach the script, so the reset timed out. Messages are now matched by page origin + request id.
+ *   New: a won X01 leg in Autodarts (checkout to 0) goes on to the next leg by itself, 2.5 s after the checkout visit
+ *   went out (Autodarts match over -> new match). Off with "Reset Autodarts: wy\u0142\u0105czony".
  *
  * 3.5.3 (Around the Clock only): Autodarts has no "bullseye only" setting (mode Full takes 25 and 50 on the bull target).
  *   The game tab corrects an outer bull (25) thrown at the bull target to a miss with the app's own throw correction,
@@ -116,7 +122,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.5.3";
+  const VERSION = "3.5.4";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -697,7 +703,8 @@
     resetCmd: "ad2dc3_reset_cmd",
     resetAck: "ad2dc3_reset_ack",
     playEpoch: "ad2dc3_play_epoch",
-    atcDc: "ad2dc3_atc_dc"
+    atcDc: "ad2dc3_atc_dc",
+    autoNext: "ad2dc3_auto_next"
   };
 
   const host = location.hostname.toLowerCase();
@@ -1264,6 +1271,10 @@
     mo.observe(document, { childList: true });
   }
 
+  // a message from this page (page script / helper). Not ev.source === window: Tampermonkey gives the userscript a
+  // proxy as `window`, so that test never matched there and the helper's answers were dropped (3.5.1-3.5.3 reset).
+  function samePage(ev) { return ev.origin === location.origin || ev.origin === "" || ev.origin === "null"; }
+
   function startPlay() {
     const W = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
     const st = { frames: 0, via: {}, last: null, lastTs: 0, lastRaw: null, published: 0, lastVisit: null, hookErr: "" };
@@ -1290,6 +1301,7 @@
       tracker.update(match);
       gset(K.playLive, { ts: now(), matchId: match.matchId, key: match.key, round: match.round, player: match.playerName, variant: match.variant,
         throws: match.darts.map(d => d.raw), finished: match.finished });
+      if (match.finished && /x01/i.test(match.variant)) autoNextLeg(m.data);
       refresh();
     }
 
@@ -1378,7 +1390,8 @@
     // 2) same hook as a page script (in case unsafeWindow is not the page world); frames come back via postMessage
     window.addEventListener("message", ev => {
       const d = ev.data;
-      if (ev.source === window && d && d.__ad2dc === 1 && typeof d.data === "string") onFrame(d.data, "skrypt strony");
+      // same page (origin), not "ev.source === window": in a userscript sandbox `window` is a proxy, never equal to ev.source
+      if (samePage(ev) && d && d.__ad2dc === 1 && typeof d.data === "string") onFrame(d.data, "skrypt strony");
     });
     try {
       const code = "(" + function () {
@@ -1444,7 +1457,7 @@
         }
         window.addEventListener("message", function (ev) {
           var d = ev.data;
-          if (ev.source !== window || !d || d.__ad2dcCmd !== 1) return;
+          if (ev.origin !== location.origin || !d || d.__ad2dcCmd !== 1) return;
           function reply(x) { x.__ad2dcRes = 1; x.rid = d.rid; window.postMessage(x, "*"); }
           var patch = d.method === "PATCH" && /^\/matches\/[\w\-]+\/throws$/.test(String(d.path)); // only a throw correction
           if (!(patch || /^(GET|POST|DELETE)$/.test(d.method)) || !/^\/(matches|lobbies)\/[\w\-\/]+$/.test(String(d.path))) return reply({ ok: false, status: 0, err: "niedozwolone: " + d.method + " " + d.path });
@@ -1469,7 +1482,7 @@
     const pending = new Map();
     window.addEventListener("message", ev => {
       const d = ev.data;
-      if (ev.source !== window || !d || d.__ad2dcRes !== 1 || !pending.has(d.rid)) return;
+      if (!samePage(ev) || !d || d.__ad2dcRes !== 1 || !pending.has(d.rid)) return; // answer of the page helper (see samePage)
       const fn = pending.get(d.rid); pending.delete(d.rid); fn(d);
     });
     function api(method, path, body) {
@@ -1541,6 +1554,7 @@
       if (!start.ok || !start.data || !start.data.id) {
         return { ok: false, how: "nowy mecz nie wystartowa\u0142 (" + (start.err || "brak id") + ")" + (ended ? ". Poprzedni mecz jest ju\u017c zako\u0144czony: za\u0142\u00f3\u017c now\u0105 gr\u0119 X01 r\u0119cznie" : "") };
       }
+      st.navigating = true;
       log("Reset: nowy mecz X01 " + start.data.id + ", przechodz\u0119 do niego");
       setTimeout(() => location.assign("/matches/" + start.data.id), 300);
       return { ok: true, how: "nowy mecz X01" + (ended ? " (" + ended + ")" : "") };
@@ -1593,6 +1607,38 @@
       if (st.lastRaw && st.lastRaw.id === matchId && Core.isFreshLeg(st.lastRaw)) return { ok: true, how: "leg od nowa (" + path + ", p\u00f3\u017aniej)" };
       return newMatch(matchId, !(st.lastRaw && st.lastRaw.finished));
     }
+    // X01: a won leg in Autodarts (leg / match finished by the checkout) -> next leg by itself, like its Next button.
+    // The visit with the checkout is already on its way to DartCounter. Off only with "Reset Autodarts: wy\u0142\u0105czony".
+    const autoDone = new Set();
+    function autoNextLeg(raw) {
+      const key = raw.id + "/" + raw.set + "." + raw.leg;
+      // won by a checkout only (somebody at 0), never the end of a match the script itself left or aborted
+      if (autoDone.has(key) || st.navigating || !Array.isArray(raw.gameScores) || !raw.gameScores.some(x => x === 0)) return;
+      autoDone.add(key);
+      setTimeout(async () => {
+        const cur = st.lastRaw;
+        if (st.navigating) return;
+        if (!cur || cur.id !== raw.id || !(cur.finished || cur.gameFinished)) { log("Autodarts: leg ju\u017c przeszed\u0142 dalej (" + stateText(cur) + ")"); return; }
+        if ((st.resetMode || "leg") === "off") { log("Autodarts: wygrany leg, bez przej\u015bcia dalej (Reset Autodarts: wy\u0142\u0105czony)"); return; }
+        if (resetBusy) { log("Autodarts: wygrany leg, przej\u015bcie dalej robi ju\u017c reset z DartCounter"); return; }
+        resetBusy = true;
+        let r;
+        try {
+          const plan = Core.resetPlan(cur);
+          log("Autodarts: wygrany leg (" + stateText(cur) + ") \u2192 " + (plan === "again" ? "nowy mecz (mecz w Autodarts sko\u0144czony)" : "nast\u0119pny leg"));
+          newEpoch(cur.id);
+          if (plan === "again") r = await newMatch(cur.id, false);
+          else {
+            const a = await call("POST", "/matches/" + cur.id + "/games/next");
+            r = a.ok && await waitFresh(cur.id, 6000) ? { ok: true, how: "nast\u0119pny leg (games/next)" }
+              : { ok: false, how: a.ok ? "brak nowego lega w stanie meczu (" + stateText(st.lastRaw) + ")" : a.err };
+          }
+        } catch (e) { r = { ok: false, how: errText(e) }; }
+        resetBusy = false;
+        log("Autodarts po wygranym legu: " + (r.ok ? "\u2713 " : "NIE WYSZ\u0141O: ") + r.how);
+        gset(K.autoNext, { ts: now(), ok: r.ok, how: r.how });
+      }, 2500);
+    }
     let resetBusy = false;
     async function checkReset() {
       if (resetBusy) return;
@@ -1608,6 +1654,7 @@
       await sleep(200);
       const mine = await gget(K.resetAck, null);
       if (!mine || mine.tab !== tab) { log("Reset: polecenie " + cmd.id + " wykonuje inna karta gry"); return; }
+      for (let i = 0; resetBusy && i < 100; i++) await sleep(150); // the auto next leg may be running: then this order sees a fresh leg
       resetBusy = true;
       let r;
       try { r = await doReset(cmd); } catch (e) { r = { ok: false, how: errText(e) }; }
@@ -1619,7 +1666,7 @@
     gget(K.resetCmd, null).then(c => { if (c) st.resetSeen = c.id; }); // an old order is not for this page
     setTimeout(() => setInterval(checkReset, 500), 1500);
     gget(K.playEpoch, null).then(e => { st.epochSaved = e; });
-    const readAtcDc = () => gget(K.atcDc, null).then(c => { st.atcDc = c; });
+    const readAtcDc = () => gget(K.atcDc, null).then(c => { st.atcDc = c; }).then(() => gget(K.resetMode, "leg")).then(m => { st.resetMode = m; });
     readAtcDc(); setInterval(readAtcDc, 2000);
 
     gget(K.panelOpen, false).then(v => ui.mount(v));
@@ -2036,6 +2083,13 @@
         S.playHb = await gget(K.playHb, null);
         S.playLive = await gget(K.playLive, null);
         await checkResetAck();
+        const an = await gget(K.autoNext, null);
+        if (an && an.ts !== S.autoNextTs) {
+          const first = S.autoNextTs === undefined;
+          S.autoNextTs = an.ts; S.autoNext = an;
+          if (!first && !an.ok) setErr("Autodarts nie przeszed\u0142 sam do kolejnego lega: " + an.how + ". Kliknij \u201eNext Leg\u201d w Autodarts.", { autodarts: an });
+          else if (!first) log("Autodarts po wygranym legu \u2713 " + an.how);
+        }
         if (S.source === "play" && S.playLive && S.playLive.ts !== S.playLiveSeenTs) {
           S.playLiveSeenTs = S.playLive.ts;
           const liveKey = "gra:" + S.playLive.matchId + "/" + S.playLive.key;
@@ -2690,7 +2744,8 @@
           : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],
         ["Kolejka", String(S.queue.length) + (S.queue.length && S.waitWhy ? " (czeka: " + S.waitWhy + ")" : "")],
         ["Reset Autodarts", RESET_MODES[S.resetMode] + (S.reset ? " | ostatni: " + hhmmss(S.reset.ts) + " " +
-          (S.reset.state === "ok" ? "\u2713 " : S.reset.state === "fail" ? "\u2717 " : "\u2026 ") + S.reset.how : "")],
+          (S.reset.state === "ok" ? "\u2713 " : S.reset.state === "fail" ? "\u2717 " : "\u2026 ") + S.reset.how : "") +
+          (S.autoNext ? " | po wygranym legu: " + hhmmss(S.autoNext.ts) + (S.autoNext.ok ? " \u2713 " : " \u2717 ") + S.autoNext.how : "")],
         ...(S.missed.length ? [["Niewpisane tury", S.missed.map(m => hhmmss(m.ts) + " " + m.labels + ": " + m.why).join(" | ")]] : [])
       ];
       ui.set("rows", rows);
