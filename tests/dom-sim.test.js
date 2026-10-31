@@ -257,7 +257,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     send(5, []); await sleep(4500);
     check(tag + ": combo S5 S1 S20 -> combo only (no laugh)", JSON.stringify(dc.audio.plays.slice(6)) === '["combo"]', dc.audio.plays);
     check(tag + ": combo turn entered once (26), entries unchanged", JSON.stringify(dc.game.submitted) === "[79,60,0,26]", dc.game);
-    // bull fireworks (3.4.0): bullseye -> big overlay + fireworks sound, outer bull -> small; no clicks blocked; gone in ~3 s
+    // bull fireworks (3.4.1): bullseye -> overlay + fireworks sound, outer bull 25 -> nothing; no clicks blocked; gone in ~3 s
     const fwEl = () => dc.doc.getElementById("ad2dc-fireworks");
     send(5, [seg(25, 2)]); await sleep(800);
     const fw = fwEl();
@@ -267,19 +267,18 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     await sleep(3600);
     check(tag + ": fireworks drawn, then removed after ~3 s", !fwEl() && dc.audio.fwDraws > 50, { left: !!fwEl(), draws: dc.audio.fwDraws });
     send(5, [seg(25, 2), seg(25, 1)]); await sleep(800);
-    check(tag + ": outer bull 25 -> small fireworks + sound", !!fwEl() && fwEl().dataset.size === "small" && Number(fwEl().dataset.bursts) === 2 &&
-      dc.audio.plays.length === 9 && dc.audio.plays[8] === "fireworks", { size: fwEl() && fwEl().dataset.size, plays: dc.audio.plays });
+    check(tag + ": outer bull 25 -> no fireworks, no sound (3.4.1)", !fwEl() && dc.audio.plays.length === 8, { fw: !!fwEl(), plays: dc.audio.plays });
     send(6, []); await sleep(4500);
     check(tag + ": bull turn entered once (75), entries unchanged", JSON.stringify(dc.game.submitted) === "[79,60,0,26,75]", dc.game);
-    check(tag + ": no fireworks for other darts", dc.audio.plays.filter(x => x === "fireworks").length === 2, dc.audio.plays);
+    check(tag + ": fireworks only for the bullseye", dc.audio.plays.filter(x => x === "fireworks").length === 1, dc.audio.plays);
     sr0.getElementById("snd").click(); await sleep(200); // one click on the speaker: sounds and effects off
     check(tag + ": speaker click -> off icon, saved with GM_setValue", sr0.getElementById("snd").dataset.on === "0" &&
       sr0.getElementById("snd").classList.contains("off") && dc.store.map.get("ad2dc3_sounds") === "false", dc.store.map.get("ad2dc3_sounds"));
     check(tag + ": speaker title talks about sounds and effects", /D\u017awi\u0119ki i efekty: WY\u0141/.test(sr0.getElementById("snd").title) &&
       sr0.getElementById("snd").getAttribute("aria-label") === sr0.getElementById("snd").title, sr0.getElementById("snd").title);
     send(6, [seg(2, 0)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3), seg(25, 2)]); await sleep(1500);
-    check(tag + ": speaker off -> miss, T20 and bullseye silent, no fireworks", dc.audio.plays.length === 9 && !fwEl(), { plays: dc.audio.plays, fw: !!fwEl() });
-    check(tag + ": pill shows version", /3\.4\.0/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
+    check(tag + ": speaker off -> miss, T20 and bullseye silent, no fireworks", dc.audio.plays.length === 8 && !fwEl(), { plays: dc.audio.plays, fw: !!fwEl() });
+    check(tag + ": pill shows version", /3\.4\.1/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
     // page reload: a new DartCounter tab with the same userscript storage keeps the muted state
     dc.w.close(); await sleep(300);
     const dc2 = makePage("none", { store, source: "play", audio: true });

@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.4.0
+// @version      3.4.1
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,11 +35,13 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.4.0
+ * AD2DC 3.4.1
  *
- * Bull fireworks (3.4.0): a canvas overlay (pointer-events: none, upper part of the screen, fades out in ~2.6 s)
- *   with big fireworks for the bullseye (50) and smaller ones for the outer bull (25), plus a short fireworks
- *   sound (public domain, see README). The round speaker button switches sounds and fireworks together.
+ * Bull fireworks (3.4.0, 3.4.1): a canvas overlay (pointer-events: none, upper part of the screen, gone in ~2.6 s)
+ *   for the bullseye (50) only, plus a short fireworks sound (CC0, see README). The round speaker button switches
+ *   sounds and fireworks together. 3.4.1 (Safari): requestAnimationFrame is called on window (WebKit throws on an
+ *   unbound call from a userscript sandbox), motion is time based (same speed at 60 and 120 Hz), the overlay is
+ *   removed by a timer even when the tab is hidden, and a suspended / interrupted audio context is resumed.
  *
  * Dart sounds (3.3.0): S1/D1/T1 -> laugh, T20 -> cheer, miss (outside the board) -> boo,
  *   a turn of exactly S1 + S5 + S20 (any order) -> combo sound at the end of the turn instead of the S1 laugh.
@@ -83,7 +85,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.4.0";
+  const VERSION = "3.4.1";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -618,11 +620,17 @@
         if (ctx.state === "suspended" && typeof ctx.resume === "function") ctx.resume().catch(() => {});
         const b = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource(); // silent tick: unlocks Safari
         src.buffer = b; src.connect(ctx.destination); src.start(0);
+        unlocked = true;
         load();
       } catch (e) { state = "niedost\u0119pne"; }
     }
-    // Fire-and-forget, never throws. A new sound stops the one that is playing.
-    function play(name, volume) {
+    // Safari may suspend or "interrupt" the context later (other window, sleep): resume quietly, never throw.
+    let unlocked = false;
+    function resume() {
+      try { if (ctx && unlocked && ctx.state !== "running" && ctx.state !== "closed" && ctx.resume) ctx.resume().catch(() => {}); } catch (_) {}
+    }
+    try { document.addEventListener("visibilitychange", () => { if (!document.hidden) resume(); }); } catch (_) {}
+    function start(name, volume) {
       try {
         if (!ctx || ctx.state !== "running" || !buffers[name]) return false;
         if (current) { try { current.stop(0); } catch (_) {} current = null; }
@@ -635,10 +643,18 @@
         return true;
       } catch (_) { return false; }
     }
+    // Fire-and-forget, never throws. A new sound stops the one that is playing.
+    function play(name, volume) {
+      if (ctx && unlocked && ctx.state !== "running" && buffers[name] && ctx.resume) {
+        try { ctx.resume().then(() => start(name, volume), () => {}); } catch (_) {}
+        return true;
+      }
+      return start(name, volume);
+    }
     function stop() { if (current) { try { current.stop(0); } catch (_) {} current = null; } }
     return {
       unlock, play, stop,
-      get state() { return ctx && ctx.state === "suspended" ? "zablokowane do pierwszego klikni\u0119cia" : state; },
+      get state() { return ctx && ctx.state !== "running" ? (unlocked ? "wstrzymane (" + ctx.state + "), wznowi si\u0119" : "zablokowane do pierwszego klikni\u0119cia") : state; },
       get ready() { return !!(ctx && ctx.state === "running" && Object.keys(buffers).length); }
     };
   })();
@@ -646,8 +662,16 @@
   // ---------- Bull fireworks: light canvas overlay, never blocks clicks ----------
   const Fireworks = (() => {
     const LIFE_MS = 2600;
-    let canvas = null, ctx = null, parts = [], timers = [], running = false, until = 0, w = 0, h = 0, dpr = 1;
-    const raf = cb => (typeof requestAnimationFrame === "function" ? requestAnimationFrame(cb) : setTimeout(() => cb(now()), 16));
+    let canvas = null, ctx = null, parts = [], timers = [], running = false, until = 0, w = 0, h = 0, dpr = 1, last = 0, watchdog = 0;
+    // Called on window: WebKit throws "Can only call Window.requestAnimationFrame on instances of Window" for an
+    // unbound call from a userscript sandbox. Falls back to a 16 ms timer.
+    function raf(cb) {
+      try {
+        const r = window.requestAnimationFrame || window.webkitRequestAnimationFrame;
+        if (typeof r === "function") return r.call(window, cb);
+      } catch (_) {}
+      return setTimeout(() => cb(now()), 16);
+    }
     function reducedMotion() {
       try { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); } catch (_) { return false; }
     }
@@ -656,11 +680,15 @@
       canvas = document.createElement("canvas");
       canvas.id = "ad2dc-fireworks";
       canvas.setAttribute("aria-hidden", "true");
-      Object.assign(canvas.style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh",
-        pointerEvents: "none", zIndex: "2147483646", opacity: "0.85", background: "transparent" });
+      // inset 0 instead of 100vw/100vh: no scrollbar width, same box in Safari and Chrome
+      Object.assign(canvas.style, { position: "fixed", left: "0", top: "0", right: "0", bottom: "0", width: "100%", height: "100%",
+        margin: "0", padding: "0", border: "0", display: "block", pointerEvents: "none", zIndex: "2147483646", opacity: "0.85",
+        background: "transparent" });
       document.documentElement.appendChild(canvas);
       dpr = Math.min(2, window.devicePixelRatio || 1);
-      w = window.innerWidth || 800; h = window.innerHeight || 600;
+      const box = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
+      w = Math.round((box && box.width) || document.documentElement.clientWidth || window.innerWidth || 800);
+      h = Math.round((box && box.height) || document.documentElement.clientHeight || window.innerHeight || 600);
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       try { ctx = canvas.getContext ? canvas.getContext("2d") : null; } catch (_) { ctx = null; }
       if (ctx && ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -669,6 +697,7 @@
       running = false; parts = [];
       for (const t of timers) clearTimeout(t);
       timers = [];
+      clearTimeout(watchdog);
       if (canvas) canvas.remove();
       canvas = null; ctx = null;
     }
@@ -680,12 +709,17 @@
           size: 1.5 + Math.random() * 1.8, color: "hsl(" + ((hue + Math.random() * 40) % 360) + ",100%,62%)" });
       }
     }
-    function frame() {
+    // Motion is time based (k = elapsed / 16.7 ms): the same speed and length at 60 Hz (Safari) and 120 Hz.
+    function frame(ts) {
       if (!running) return;
+      const t = typeof ts === "number" && ts > 0 ? ts : now();
+      const k = last ? Math.max(0.25, Math.min(4, (t - last) / 16.667)) : 1;
+      last = t;
       if (ctx) {
         ctx.clearRect(0, 0, w, h);
+        const drag = Math.pow(0.985, k);
         for (const p of parts) {
-          p.vy += 0.045; p.vx *= 0.985; p.vy *= 0.985; p.x += p.vx; p.y += p.vy; p.life -= p.decay;
+          p.vy += 0.045 * k; p.vx *= drag; p.vy *= drag; p.x += p.vx * k; p.y += p.vy * k; p.life -= p.decay * k;
           if (p.life <= 0) continue;
           ctx.globalAlpha = Math.max(0, p.life);
           ctx.fillStyle = p.color;
@@ -713,7 +747,10 @@
         canvas.dataset.size = big ? "big" : "small";
         canvas.dataset.bursts = String((Number(canvas.dataset.bursts) || 0) + spots.length);
         until = now() + LIFE_MS + (calm ? 0 : spots.length * (big ? 140 : 220));
-        if (!running) { running = true; raf(frame); }
+        // removed by a timer as well: a hidden tab gets no animation frames (Safari pauses them)
+        clearTimeout(watchdog);
+        watchdog = setTimeout(remove, until - now() + 400);
+        if (!running) { running = true; last = 0; raf(frame); }
         return true;
       } catch (_) { return false; }
     }
@@ -1152,7 +1189,7 @@
     }
     const bullDarts = Core.createNewDarts(d => {
       const kind = Core.bullKind(d);
-      if (kind && S.leader) bullFireworks(kind, d.label);
+      if (kind === "big" && S.leader) bullFireworks(kind, d.label); // 3.4.1: bullseye (50) only, nothing for 25
     });
     const soundRules = Core.createSoundRules((name, why) => {
       if (!S.sounds || !S.leader) return;
@@ -1815,7 +1852,7 @@
         ["Ostatnia tura", S.lastVisit ? S.lastVisit.labels + " = " + S.lastVisit.total + " (" + hhmmss(S.lastVisit.ts) + ")" : "-"],
         ["Pole wyniku", t ? "znalezione: " + t.how : "BRAK" + (mp.ok ? " (czekam na Twoj\u0105 kolej)" : "")],
         ["Ostatni wpis", S.lastEntry ? S.lastEntry.score + (S.lastEntry.ok ? " \u2713 " : " \u2717 ") + hhmmss(S.lastEntry.ts) + " (" + S.lastEntry.how + ")" : "-"],
-        ["D\u017awi\u0119ki i efekty", S.sounds ? "W\u0141, " + S.soundVolume + "%, " + Sound.state + ", fajerwerki przy bullu" : "WY\u0141"],
+        ["D\u017awi\u0119ki i efekty", S.sounds ? "W\u0141, " + S.soundVolume + "%, " + Sound.state + ", fajerwerki przy 50" : "WY\u0141"],
         ["Wpis", t && t.mode === "darts" ? "lotka po lotce (klawiatura lotek w DartCounter)"
           : t && t.mode === "unsupported" ? "BRAK: " + t.how
           : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],

@@ -1,10 +1,10 @@
 # AutoDarts → DartCounter Bridge
 
-Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled. Optional fun sounds for some darts (laugh, cheer, boo, combo) and fireworks on a bull.
+Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled. Optional fun sounds for some darts (laugh, cheer, boo, combo) and fireworks on a bullseye (50).
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.4.0**.
+Wersja: **3.4.1**. Zmiany: [CHANGELOG.md](CHANGELOG.md).
 
 ## Instalacja
 
@@ -44,15 +44,13 @@ Sposób wpisu wynika z klawiatury wybranej w meczu DartCounter (ikona klawiatury
 
 Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma pierwszeństwo: przy klawiaturze lotek skrypt zawsze wpisuje lotka po lotce, przy polu tekstowym lub klawiaturze z cyframi — sumę.
 
-## Fajerwerki przy bullu (od 3.4.0)
+## Fajerwerki przy bullseye (od 3.4.0, tylko 50 od 3.4.1)
 
-Gdy lotka trafi w bulla, na ekranie DartCounter wybuchają fajerwerki:
-
-- **bullseye (50, D-Bull):** duże fajerwerki — 7 wybuchów u góry i po bokach ekranu,
-- **zewnętrzny bull (25):** mniejsze — 2 wybuchy w górnych rogach,
-- do tego krótki dźwięk fajerwerków (`fireworks-1.mp3`, przy 25 ciszej).
+Gdy lotka trafi w **bullseye (50, D-Bull)**, na ekranie DartCounter wybuchają fajerwerki (7 wybuchów u góry i po bokach ekranu) i gra krótki dźwięk fajerwerków (`fireworks-1.mp3`). Zewnętrzny bull (25) nie daje fajerwerków.
 
 Efekt to przezroczysta warstwa (canvas) nad stroną, z `pointer-events: none`: nie przechwytuje kliknięć, nie zasłania pola wyniku (wybuchy są w górnej części i przy bokach) i znika po ok. 2,6 s. Bez zewnętrznych bibliotek. Przy ustawieniu systemowym „ogranicz ruch” (`prefers-reduced-motion`) jest jeden mały wybuch.
+
+Safari: od 3.4.1 animacja działa tak samo jak w Chrome — `requestAnimationFrame` jest wywoływany na `window` (WebKit w piaskownicy skryptu odrzucał wywołanie bez kontekstu i zostawiał puste płótno), ruch jest liczony od czasu (ta sama prędkość przy 60 i 120 Hz), a warstwa znika po czasie także w karcie w tle. Sprawdzone w silnikach WebKit i Chromium (Playwright).
 
 Włączanie i wyłączanie: **ten sam okrągły przycisk głośnika** obok kółka AD2DC włącza i wyłącza razem dźwięki i fajerwerki (domyślnie włączone, stan zapisany jak inne ustawienia). W rozwiniętym panelu przycisk **Test fajerwerków** pokazuje duże fajerwerki na próbę.
 
