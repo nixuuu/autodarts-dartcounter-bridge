@@ -551,6 +551,16 @@ test("match tracker: a visit that ends the Autodarts game carries finished", () 
   tr.update(m([], false)); tr.update(m([oldT("S20", 20, "Single", 1)], false)); tr.update(m([oldT("S20", 20, "Single", 1), oldT("S25", 25, "Single", 1)], true));
   assert.equal(out.length, 1); assert.equal(out[0].finished, true);
 });
+test("atcOuterBullThrow: S25 on the bull target in mode Full only", () => {
+  const st = (throws, o) => Object.assign({ id: "a1", variant: "ATC", settings: { mode: "Full", order: "1-20-Bull", hits: 1 }, player: 0, round: 9,
+    players: [{ id: "p" }], turns: [{ round: 9, playerId: "p", throws }], state: { targets: [[{ number: 20 }, { number: 25 }]], currentTargets: [1] } }, o || {});
+  const s20 = oldT("S20", 20, "Single", 1), s25 = oldT("S25", 25, "Single", 1), d25 = oldT("D25", 25, "Double", 2);
+  assert.equal(Core.atcOuterBullThrow(st([s20]), st([s20, s25])), 1);
+  assert.equal(Core.atcOuterBullThrow(st([s20]), st([s20, d25])), -1); // 50 is the hit
+  assert.equal(Core.atcOuterBullThrow(st([], { state: { targets: [[{ number: 20 }]], currentTargets: [0] } }), st([s25])), -1); // target 20
+  assert.equal(Core.atcOuterBullThrow(st([s20], { settings: { mode: "Single" } }), st([s20, s25], { settings: { mode: "Single" } })), -1); // 25 is the target
+  assert.equal(Core.atcOuterBullThrow(st([s20], { variant: "X01" }), st([s20, s25], { variant: "X01" })), -1);
+});
 test("match tracker epoch: after reset the repeated turn keys are new visits", () => {
   const out = [];
   const tr = Core.createMatchTracker(v => out.push(v));

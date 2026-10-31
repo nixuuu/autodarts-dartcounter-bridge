@@ -33,7 +33,7 @@ function state(o) {
     player: 0, round: 1, set: 0, leg: 0, finished: false, gameFinished: false, gameScores: [501], turns: [{ round: 1, playerId: "p1", throws: [] }] }, o);
 }
 
-function makePlay(store, api) {
+function makePlay(store, api, onCmd) {
   const vc = new VirtualConsole();
   const nav = [];
   vc.on("jsdomError", e => { if (/navigation/.test(e.message)) nav.push(e.message); else console.error(e); }); // location.assign to the new match
@@ -49,7 +49,8 @@ function makePlay(store, api) {
     const d = ev.data;
     if (!d || d.__ad2dcCmd !== 1) return;
     calls.push(d.method + " " + d.path);
-    Promise.resolve(api(d.method, d.path)).then(res => {
+    if (onCmd) onCmd(d);
+    Promise.resolve(api(d.method, d.path, d.body)).then(res => {
       setTimeout(() => w.dispatchEvent(new w.MessageEvent("message", { data: Object.assign({ __ad2dcRes: 1, rid: d.rid }, res), source: w })), 20);
     });
   });
@@ -252,6 +253,69 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     order(store, "leg");
     await sleep(1500);
     check("X01 order (leg end) on an ATC game -> fail, nothing called", pg.calls.length === 1 && ack(store).state === "fail" && /X01/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+  }
+
+  // 10) 3.5.3 Around the Clock, mode Full: 25 on the bull target -> corrected in Autodarts to a miss (PATCH throws)
+  const atcBull = o => state(Object.assign({ variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, gameScores: [20],
+    state: { targets: [[...Array.from({ length: 20 }, (_, i) => ({ number: i + 1, bed: "Full" })), { number: 25, bed: "Full" }]], currentTargets: [20] } }, o));
+  const turn = (round, throws) => ({ round, turns: [{ round, playerId: "p1", throws }] });
+  const C = (n, m, x, y) => Object.assign(T(n, m), { coords: { x, y } });
+  {
+    const store = makeStore();
+    let pg, body = null;
+    pg = makePlay(store, (m, p, b) => {
+      if (m === "PATCH" && p === "/matches/m1/throws") {
+        setTimeout(() => pg.send(atcBull(turn(12, [T(20, 1), { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } }]))), 60);
+        return { ok: true, status: 200 };
+      }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    }, d => { body = d.body; });
+    await sleep(1800);
+    pg.send(atcBull(turn(12, [T(20, 1)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), C(25, 1, 0.03, 0.04)]), { finished: true })));
+    await sleep(600);
+    check("ATC 25 on the bull -> PATCH throws with the dart moved outside the board",
+      pg.calls.join("|") === "PATCH /matches/m1/throws" && body && body.changes && body.changes["1"] && body.changes["1"].type === "Normal" &&
+      Math.abs(Math.hypot(body.changes["1"].coords.x, body.changes["1"].coords.y) - 1.5) < 1e-9, { calls: pg.calls, body });
+    check("ATC 25 on the bull -> no visit while Autodarts corrects", visits(store).length === 0, visits(store));
+    pg.send(atcBull(turn(12, [T(20, 1), { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } }, T(25, 2)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } }, T(25, 2)]), { finished: true })));
+    await sleep(400);
+    const v = visits(store);
+    check("after the correction: one visit S20 Miss BULL, ends the game on 50", v.length === 1 && v[0].labels.split(" ").length === 3 && v[0].labels.split(" ")[0] === "S20" && v[0].labels.split(" ")[1] !== "25" && v[0].labels.split(" ")[2] === "BULL" && v[0].finished === true, v);
+    check("correction logged", pg.logs.some(l => /25 na bullu/.test(l)) && pg.logs.some(l => /przyj\u0105\u0142 korekt/.test(l)), pg.logs.filter(l => /ATC/.test(l)));
+  }
+  // correction refused -> the held state goes on: the visit with 25 ends the Autodarts game (fallback: restart from DartCounter)
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: false, status: 400, err: "HTTP 400 game finished" }));
+    await sleep(1800);
+    pg.send(atcBull(turn(12, [T(20, 1)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), T(25, 1)]), { finished: true })));
+    await sleep(800);
+    const v = visits(store);
+    check("correction refused -> visit S20 S25 published as finished (DartCounter: 25 = miss, Autodarts restarted)", v.length === 1 && v[0].labels === "S20 25" && v[0].finished === true, v);
+  }
+  // DartCounter counts 25 too ("bull or bullseye") -> no correction
+  {
+    const store = makeStore();
+    store.set("ad2dc3_atc_dc", { throwout: "all", ts: Date.now() });
+    const pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    await sleep(2500);
+    pg.send(atcBull(turn(12, [T(20, 1)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), T(25, 1)]), { finished: true })));
+    await sleep(500);
+    check("DartCounter bull setting 'all' -> no correction, visit as thrown", pg.calls.length === 0 && visits(store).length === 1, { calls: pg.calls, v: visits(store) });
+  }
+  // X01: S25 never corrected
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    await sleep(1800);
+    pg.send(state({ round: 3, gameScores: [100], turns: [{ round: 3, playerId: "p1", throws: [T(20, 1)] }] }));
+    pg.send(state({ round: 3, gameScores: [55], turns: [{ round: 3, playerId: "p1", throws: [T(20, 1), T(25, 1)] }] }));
+    await sleep(500);
+    check("X01: 25 is never corrected", pg.calls.length === 0, pg.calls);
   }
 
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");

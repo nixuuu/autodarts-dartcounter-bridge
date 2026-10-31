@@ -186,7 +186,7 @@ const last = g => g.turns[g.turns.length - 1];
     check("T1 D2 S20 (small numbers are not confused with 10/12/20)", JSON.stringify(p.g.turns[4].darts) === '["T1","D2","S20"]' && JSON.stringify(clicks) === '["T","n1","D","n2","S","n20","submit"]', { t: p.g.turns[4], clicks });
 
     const panel = sr.getElementById("box").textContent + " " + sr.getElementById("pilltxt").textContent;
-    check("Polish panel text decoded from \\u escapes (e.g. \"Źródło\", \"Wpis\")", /Źródło/.test(panel) && /lotka po lotce/.test(panel) && /AD2DC 3\.5\.2/.test(panel), panel.slice(0, 200));
+    check("Polish panel text decoded from \\u escapes (e.g. \"Źródło\", \"Wpis\")", /Źródło/.test(panel) && /lotka po lotce/.test(panel) && /AD2DC 3\.5\.3/.test(panel), panel.slice(0, 200));
     clearInterval(hb); p.w.close();
   }
 

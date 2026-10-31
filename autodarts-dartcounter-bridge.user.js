@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.5.2
+// @version      3.5.3
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,13 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.5.2
+ * AD2DC 3.5.3
+ *
+ * 3.5.3 (Around the Clock only): Autodarts has no "bullseye only" setting (mode Full takes 25 and 50 on the bull target).
+ *   The game tab corrects an outer bull (25) thrown at the bull target to a miss with the app's own throw correction,
+ *   so Autodarts finishes only on 50, like DartCounter "Finish by hitting the bullseye". Not when DartCounter counts 25
+ *   too. If Autodarts refuses the correction, the 3.5.2 fallback stays: DartCounter takes 25 as a miss and the game tab
+ *   starts the Autodarts game again. X01 unchanged.
  *
  * 3.5.2: the end of a DartCounter leg is also seen when the scoreboard is gone for a moment between legs or the
  *   players start from different scores (handicap): rests are compared with the last complete reading, and the legs
@@ -110,7 +116,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.5.2";
+  const VERSION = "3.5.3";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -616,6 +622,23 @@
       if (raw.finished) return "again";
       return "restart";
     }
+    // Around the Clock, mode Full: Autodarts counts the outer bull (25) on the bull target. DartCounter with "Finish by
+    // hitting the bullseye" wants 50. Returns the turn index of a new S25 thrown at the bull target (from the previous
+    // state: same match, same player, target number 25/50), else -1. Any other variant or mode: -1.
+    function atcOuterBullThrow(prev, raw) {
+      if (!prev || !raw || prev.id !== raw.id || !/^atc$/i.test(String(raw.variant || ""))) return -1;
+      if (!raw.settings || raw.settings.mode !== "Full") return -1;
+      const p = typeof raw.player === "number" ? raw.player : 0;
+      if ((typeof prev.player === "number" ? prev.player : 0) !== p) return -1;
+      const ps = prev.state || {};
+      const tgt = ps.targets && ps.targets[p] && ps.currentTargets ? ps.targets[p][ps.currentTargets[p]] : null;
+      if (!tgt || (tgt.number !== 25 && tgt.number !== 50)) return -1;
+      const a = parseMatch(prev), b = parseMatch(raw);
+      if (!a || !b || a.key !== b.key || b.darts.length !== a.darts.length + 1) return -1;
+      const d = b.darts[b.darts.length - 1];
+      return d && d.number === 25 && d.multiplier === 1 ? b.darts.length - 1 : -1;
+    }
+
     // fresh leg: every score is the start score and nobody has thrown yet in it
     function isFreshLeg(raw) {
       if (raw && /atc|around/i.test(String(raw.variant || "")) && !raw.finished && !raw.gameFinished) // Around the Clock: nobody has thrown yet
@@ -628,7 +651,7 @@
 
     return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
       dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts,
-      atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, interimLegEnd, resetWanted, resetPlan, isFreshLeg };
+      atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, interimLegEnd, resetWanted, resetPlan, isFreshLeg, atcOuterBullThrow };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -673,7 +696,8 @@
     resetMode: "ad2dc3_reset_mode",
     resetCmd: "ad2dc3_reset_cmd",
     resetAck: "ad2dc3_reset_ack",
-    playEpoch: "ad2dc3_play_epoch"
+    playEpoch: "ad2dc3_play_epoch",
+    atcDc: "ad2dc3_atc_dc"
   };
 
   const host = location.hostname.toLowerCase();
@@ -1258,12 +1282,63 @@
       if (!match) return;
       st.frames++; st.via[via] = (st.via[via] || 0) + 1;
       if (st.frames === 1) log("Odbieram stan meczu z gry Autodarts (" + via + ")");
+      const prevRaw = st.lastRaw;
       st.last = match; st.lastTs = now(); st.lastRaw = m.data;
+      if (atcBullFrame(prevRaw, m.data, match)) { refresh(); return; } // Around the Clock: 25 on the bull is being corrected
       // the same match after a reset (page reloaded): keep the visit ids of the restarted leg
       if (st.epochSaved && st.epochSaved.matchId === match.matchId && !tracker.epoch() && !tracker.current()) tracker.reset(st.epochSaved.epoch);
       tracker.update(match);
       gset(K.playLive, { ts: now(), matchId: match.matchId, key: match.key, round: match.round, player: match.playerName, variant: match.variant,
         throws: match.darts.map(d => d.raw), finished: match.finished });
+      refresh();
+    }
+
+    // ----- Around the Clock: 25 on the bull target = miss in Autodarts (like DartCounter "Finish by hitting the bullseye") -----
+    // Autodarts has no such setting (bull target in mode Full takes 25 and 50). The script corrects the 25 to a miss
+    // with the app's own throw correction (PATCH throws, coordinates outside the board). Until Autodarts answers, the
+    // state with the 25 is held back (no visit, no sound). Not accepted within 4 s -> the held state goes on as usual
+    // (the visit ends the Autodarts game, DartCounter takes 25 as a miss and the game tab starts Autodarts again).
+    function atcFixWanted() {
+      const c = st.atcDc; // DartCounter ATC bull setting, published by the DartCounter tab
+      return !c || c.throwout === "bullseye";
+    }
+    function atcBullFrame(prevRaw, raw, match) {
+      const f = st.atcFix;
+      if (f) {
+        if (raw.id !== f.matchId) { st.atcFix = null; return false; }
+        const d = match.darts[f.idx];
+        if (!(d && d.number === 25 && d.multiplier === 1)) {
+          st.atcFix = null;
+          log("ATC: Autodarts przyj\u0105\u0142 korekt\u0119, lotka " + (f.idx + 1) + " = " + (d ? d.label : "brak") + (match.finished ? "" : ", gra trwa dalej (bull tylko 50)"));
+          return false;
+        }
+        f.held = { raw, match };
+        return true;
+      }
+      const idx = Core.atcOuterBullThrow(prevRaw, raw);
+      if (idx < 0 || !atcFixWanted()) return false;
+      st.atcFix = { matchId: raw.id, idx, ts: now(), held: { raw, match } };
+      const t = match.darts[idx] && match.darts[idx].raw;
+      const c = t && t.coords && typeof t.coords.x === "number" && typeof t.coords.y === "number" && (t.coords.x || t.coords.y) ? t.coords : { x: 0, y: -1 };
+      const len = Math.hypot(c.x, c.y) || 1;
+      const coords = { x: c.x / len * 1.5, y: c.y / len * 1.5 }; // same direction, outside the board = miss
+      log("ATC: 25 na bullu (lotka " + (idx + 1) + ") \u2192 poprawiam w Autodarts na pud\u0142o, bull liczy si\u0119 tylko 50");
+      const fix = st.atcFix;
+      api("PATCH", "/matches/" + raw.id + "/throws", { changes: { [String(idx)]: { coords, type: "Normal" } } }).then(r => {
+        log("ATC API: PATCH /matches/" + raw.id + "/throws \u2192 " + (r.ok ? "OK " + r.status : (r.err || "b\u0142\u0105d " + r.status)));
+        if (!r.ok) releaseAtcFix(fix, "Autodarts odrzuci\u0142 korekt\u0119 (" + (r.err || r.status) + ")");
+      });
+      setTimeout(() => releaseAtcFix(fix, "brak poprawionego stanu po 4 s"), 4000);
+      return true;
+    }
+    function releaseAtcFix(fix, why) {
+      if (st.atcFix !== fix) return;
+      st.atcFix = null;
+      log("ATC: 25 zostaje w Autodarts (" + why + "). DartCounter i tak liczy 25 jako pud\u0142o; gdy Autodarts zako\u0144czy gr\u0119, karta gry zacznie j\u0105 od nowa.");
+      const h = fix.held;
+      tracker.update(h.match);
+      gset(K.playLive, { ts: now(), matchId: h.match.matchId, key: h.match.key, round: h.match.round, player: h.match.playerName, variant: h.match.variant,
+        throws: h.match.darts.map(d => d.raw), finished: h.match.finished });
       refresh();
     }
 
@@ -1371,10 +1446,13 @@
           var d = ev.data;
           if (ev.source !== window || !d || d.__ad2dcCmd !== 1) return;
           function reply(x) { x.__ad2dcRes = 1; x.rid = d.rid; window.postMessage(x, "*"); }
-          if (!/^(GET|POST|DELETE)$/.test(d.method) || !/^\/(matches|lobbies)\/[\w\-\/]+$/.test(String(d.path))) return reply({ ok: false, status: 0, err: "niedozwolone: " + d.method + " " + d.path });
+          var patch = d.method === "PATCH" && /^\/matches\/[\w\-]+\/throws$/.test(String(d.path)); // only a throw correction
+          if (!(patch || /^(GET|POST|DELETE)$/.test(d.method)) || !/^\/(matches|lobbies)\/[\w\-\/]+$/.test(String(d.path))) return reply({ ok: false, status: 0, err: "niedozwolone: " + d.method + " " + d.path });
           token().then(function (t) {
             if (!t) return reply({ ok: false, status: 0, err: "brak tokenu logowania Autodarts (od\u015bwie\u017c kart\u0119 gry)" });
-            return fetch((seen.base || "https://api.autodarts.com/gs/v0") + d.path, { method: d.method, headers: { Authorization: "Bearer " + t } })
+            var init = { method: d.method, headers: { Authorization: "Bearer " + t } };
+            if (patch && d.body) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(d.body); }
+            return fetch((seen.base || "https://api.autodarts.com/gs/v0") + d.path, init)
               .then(function (r) {
                 return r.text().then(function (txt) {
                   var j = null;
@@ -1394,12 +1472,12 @@
       if (ev.source !== window || !d || d.__ad2dcRes !== 1 || !pending.has(d.rid)) return;
       const fn = pending.get(d.rid); pending.delete(d.rid); fn(d);
     });
-    function api(method, path) {
+    function api(method, path, body) {
       return new Promise(resolve => {
         const rid = Math.random().toString(36).slice(2);
         const timer = setTimeout(() => { pending.delete(rid); resolve({ ok: false, status: 0, err: "strona nie odpowiedzia\u0142a (10 s)" }); }, 10000);
         pending.set(rid, d => { clearTimeout(timer); resolve(d); });
-        window.postMessage({ __ad2dcCmd: 1, rid, method, path }, "*");
+        window.postMessage({ __ad2dcCmd: 1, rid, method, path, body }, "*");
       });
     }
     async function waitFresh(matchId, ms) {
@@ -1541,6 +1619,8 @@
     gget(K.resetCmd, null).then(c => { if (c) st.resetSeen = c.id; }); // an old order is not for this page
     setTimeout(() => setInterval(checkReset, 500), 1500);
     gget(K.playEpoch, null).then(e => { st.epochSaved = e; });
+    const readAtcDc = () => gget(K.atcDc, null).then(c => { st.atcDc = c; });
+    readAtcDc(); setInterval(readAtcDc, 2000);
 
     gget(K.panelOpen, false).then(v => ui.mount(v));
     log("Start " + VERSION + " na karcie gry " + location.pathname + " (" + managerName() + ")");
@@ -2616,6 +2696,7 @@
       ui.set("rows", rows);
       const kb = keyboardSetting();
       const atcCfg = mp.atc ? Core.atcDcConfig(atcDcSettings()) : null;
+      if (atcCfg && atcCfg.throwout !== S.atcDcSent) { S.atcDcSent = atcCfg.throwout; gset(K.atcDc, { throwout: atcCfg.throwout, ts: now() }); } // for the game tab (25 on the bull)
       ui.set("hint", atcCfg && !atcCfg.ok
         ? "Around the Clock: " + atcCfg.why + ". Ustaw w DartCounter: Play from 1 to 20, Finish by hitting the bullseye, bez \u201eIncrease by segment\u201d."
         : mp.atc && atcBoardKeyboard() ? "Around the Clock: wybierz w DartCounter klawiatur\u0119 z przyciskami S/D/T i Miss (klikana tarcza nie jest obs\u0142ugiwana)."

@@ -59,7 +59,9 @@ Jak to działa: po każdej turze z Autodarts skrypt klika w DartCounter każdą 
 
 **Różnica przy bullu:** w Autodarts na końcu wystarcza też zewnętrzny bull (25). DartCounter z „Finish by hitting the bullseye” zalicza tylko **50**. Skrypt wysyła lotki tak, jak padły, więc przy 25 Autodarts może już skończyć grę, a DartCounter dalej czeka na 50. Tak jest celowo: grę kończy bull 50, a DartCounter jest wynikiem odniesienia.
 
-Od 3.5.2, tylko w Around the Clock: gdy Autodarts zamknie grę (np. po 25), a DartCounter gra dalej (25 wpisane jako Miss), karta gry od razu zaczyna grę w Autodarts od nowa. Robi to jak przycisk „Dalej” w Autodarts, a gdy nie zadziała, zakłada nowy mecz z tymi samymi ustawieniami. Kolejne lotki znów płyną do DartCountera i bull 50 kończy grę. Wymaga otwartej karty gry i źródła „gra Autodarts”. Przycisk „Reset Autodarts: wyłączony” wyłącza też to wznawianie. Gdy obie strony skończą na 50, nic się nie dzieje. X01 działa jak wcześniej.
+Od 3.5.3, tylko w Around the Clock: Autodarts nie ma ustawienia „bull tylko 50” (w trybie Full cel bull przyjmuje 25 i 50). Dlatego gdy na celu bull padnie 25, karta gry od razu poprawia tę lotkę w Autodarts na pudło. Używa do tego korekty lotki z samej aplikacji. Autodarts gra dalej i kończy dopiero na 50, tak jak DartCounter z „Finish by hitting the bullseye”. Korekty nie ma, gdy DartCounter liczy też 25 („bull or bullseye”). Wymaga otwartej karty gry.
+
+Zapas (od 3.5.2), gdy Autodarts nie przyjmie korekty: Autodarts zamknie grę po 25, a DartCounter gra dalej (25 wpisane jako Miss). Karta gry od razu zaczyna wtedy grę w Autodarts od nowa. Robi to jak przycisk „Dalej” w Autodarts, a gdy nie zadziała, zakłada nowy mecz z tymi samymi ustawieniami. Kolejne lotki znów płyną do DartCountera i bull 50 kończy grę. Wymaga otwartej karty gry i źródła „gra Autodarts”. Przycisk „Reset Autodarts: wyłączony” wyłącza też to wznawianie. Gdy obie strony skończą na 50, nic się nie dzieje. X01 działa jak wcześniej.
 
 Bez wpisu (z czytelnym błędem w panelu i w konsoli):
 

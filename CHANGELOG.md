@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.5.3
+
+- Around the Clock only: Autodarts now counts the outer bull (25) as a miss on the bull target and finishes only on the bullseye (50), like DartCounter with "Finish by hitting the bullseye".
+  - Autodarts has no setting for this. Mode Full takes 25 and 50 on the bull target, and only Double/Triple require 50 but then for every number too.
+  - So the game tab corrects the 25 to a miss with the app's own throw correction (`PATCH /matches/{id}/throws`, the dart moved outside the board). The game goes on.
+  - No correction when DartCounter also counts 25 ("bull or bullseye").
+  - If Autodarts refuses the correction, the 3.5.2 fallback stays: DartCounter takes 25 as a miss and the game tab starts the Autodarts game again.
+- X01 unchanged.
+
 ## 3.5.2
 
 - Fix: after a lost DartCounter leg, Autodarts was not reset. The leg end was only seen when two consecutive readings of the rests went straight to the start score. It was missed when DartCounter redrew the scoreboard between legs (the rests gone for a moment) and when the players start from different scores (handicap).
