@@ -208,8 +208,9 @@ function publish(store, labels) {
   list.push({ id: "m1/0.0." + n + ".0", ts: Date.now(), reason: "następna tura", throws: labels.split(" ").map(P), labels });
   store.map.set("ad2dc3_play_visits", JSON.stringify(list));
 }
+const VERSION = /@version\s+(\S+)/.exec(SCRIPT)[1];
 function heartbeat(store) {
-  const beat = () => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" }));
+  const beat = () => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" }));
   beat();
   return setInterval(beat, 400);
 }
@@ -334,10 +335,13 @@ async function scenario(mode, rest, visits, opts) {
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
     check("match end screen -> reset order kind 'match'", cmd && cmd.kind === "match", cmd);
-    // no answer from a game tab -> clear error after 8 s
-    await sleep(8000);
+    // 3.5.5: no answer from the game tab -> the same order again after 3 s and 6 s, then a clear error (alive, same version)
+    await sleep(4000);
+    check("no answer within 3 s -> the same order sent again (attempt 2)", (s.store.get("ad2dc3_reset_cmd") || {}).id === cmd.id && s.store.get("ad2dc3_reset_cmd").attempt === 2, s.store.get("ad2dc3_reset_cmd"));
+    await sleep(6000);
     s.p.openPanel(); await sleep(600);
-    check("no game tab answer -> clear error", /karta gry nie odpowiada/.test(s.p.panel().err), s.p.panel());
+    check("no game tab answer after 3 tries -> clear error", (s.store.get("ad2dc3_reset_cmd") || {}).attempt === 3 &&
+      /karta gry nie odebra\u0142a polecenia po 3 pr\u00f3bach.*od\u015bwie\u017c j\u0105/.test(s.p.panel().err), { err: s.p.panel().err, cmd: s.store.get("ad2dc3_reset_cmd") });
     s.stop();
   }
 

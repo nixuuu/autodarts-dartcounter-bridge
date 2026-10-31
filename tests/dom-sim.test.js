@@ -11,6 +11,7 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const SCRIPT = fs.readFileSync(path.join(__dirname, "..", "autodarts-dartcounter-bridge.user.js"), "utf8");
+const VERSION = /@version\s+(\S+)/.exec(SCRIPT)[1];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T = (n, m) => ({ segmentName: (m === 3 ? "T" : m === 2 ? "D" : m === 0 ? "M" : "S") + n, segmentNumber: n, multiplier: m, bed: m === 0 ? "Outside" : "Single" });
 
@@ -278,7 +279,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
       sr0.getElementById("snd").getAttribute("aria-label") === sr0.getElementById("snd").title, sr0.getElementById("snd").title);
     send(6, [seg(2, 0)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3), seg(25, 2)]); await sleep(1500);
     check(tag + ": speaker off -> miss, T20 and bullseye silent, no fireworks", dc.audio.plays.length === 8 && !fwEl(), { plays: dc.audio.plays, fw: !!fwEl() });
-    check(tag + ": pill shows version", /3\.5\.4/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
+    check(tag + ": pill shows version", sr0.getElementById("pilltxt").textContent.includes("AD2DC " + VERSION), sr0.getElementById("pilltxt").textContent);
     // page reload: a new DartCounter tab with the same userscript storage keeps the muted state
     dc.w.close(); await sleep(300);
     const dc2 = makePage("none", { store, source: "play", audio: true });

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.5.5
+
+- Fix (X01): Autodarts did not start again after a lost DartCounter leg.
+  - Checked on the real app.dartcounter.net (local X01 match vs DartBot, wide and narrow window) in WebKit and Chromium with a Tampermonkey-like sandbox: the lost leg is seen and the order reaches the game tab within a second.
+  - The step that never ran for real was on the Autodarts side: `games/restart` is in the Autodarts app's API client, but no button of the app uses it, and no public list of the app's API calls has it.
+  - A leg in progress is now taken back to its start with the app's own Undo (`POST /undo`, one dart or one change of turn per call; Autodarts never undoes past the start of a leg). Each step waits for the new match state. Fallbacks: `games/restart`, then a new match like the app's "Play again".
+  - Turns shown again while rewinding are never sent. A dart thrown during the rewind is undone as well and listed under "Niewpisane tury" in DartCounter.
+- Orders between the tabs: the game tab answers at once ("received", with its version), then with every Autodarts API step and its HTTP code, then the result. Without an answer DartCounter sends the same order again after 3 s and 6 s (it runs once), then says clearly what is wrong (game tab closed, asleep, other version, or not reading orders).
+- New: both tabs send a heartbeat with their version. Each panel warns when the other tab is closed or asleep, or runs another version, and says which tab to refresh.
+- DartCounter leg end also from DartCounter's own saved local match (IndexedDB): finished legs and who won the last one. A leg won by the DartBot is a lost leg. The rests and the legs counter stay as signals.
+- Around the Clock: when Autodarts ends its game on a dart that is not the bullseye (e.g. 25 on the bull) while DartCounter finishes only on 50, the game tab itself starts the next Autodarts game (`games/next`, like the won X01 leg; else "Play again"). DartCounter counts 25 as Miss, 50 ends the game, nothing to click. Only while DartCounter plays Around the Clock with the bridge on, and only for orders that end on the bull. The throw correction (`PATCH throws`) is still tried first (up to 4 s). The ATC target is also read under other state field names.
+- Tests: new checks for all of the above (logic and jsdom), and browser tests (`npm run test:browser`) in WebKit and Chromium with a Tampermonkey-like sandbox: X01 lost leg, Around the Clock 25, version warning.
+- X01 entry, the won leg and the rest of Around the Clock unchanged.
+
 ## 3.5.4
 
 - Fix (X01): the Autodarts reset after a DartCounter leg now works in Tampermonkey. Real cause, present since 3.5.1:

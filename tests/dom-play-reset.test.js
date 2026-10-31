@@ -3,7 +3,8 @@
 // Fake page: a WebSocket that the script hooks (match state frames, channel autodarts.matches) and a fake
 // page helper that answers the script's API requests (in the real page the injected helper calls api.autodarts.com).
 // Plan, like the Autodarts Next button: leg over -> POST games/next; match over -> new match from the old one;
-// leg in progress -> POST games/restart, if that gives no fresh leg -> new match (from-match, DELETE old, start).
+// leg in progress (3.5.5) -> the app's own Undo back to the start of the leg, else POST games/restart, else a new match
+// (from-match, DELETE old, start). Answers: "received" at once, "busy" with the API steps, then "ok" / "fail".
 "use strict";
 const fs = require("node:fs");
 const path = require("node:path");
@@ -65,6 +66,8 @@ function makePlay(store, api, onCmd, opt) {
   const send = s => ws.dispatchEvent(new w.MessageEvent("message", { data: JSON.stringify({ channel: "autodarts.matches", topic: s.id + ".state", data: s }) }));
   return { w, calls, logs, send, nav };
 }
+// the DartCounter tab plays Around the Clock with the bridge on (its heartbeat), needed for the automatic ATC restart
+const dcAtc = store => { const beat = () => store.set("ad2dc3_dc_hb", { ts: Date.now(), v: "3.5.5", path: "/game/around-the-clock", enabled: true }); beat(); return setInterval(beat, 500); };
 const order = (store, kind) => store.set("ad2dc3_reset_cmd", { id: "dc-" + Math.random().toString(36).slice(2), ts: Date.now(), kind: kind || "leg", won: false });
 const ack = store => store.get("ad2dc3_reset_ack") || {};
 const visits = store => store.get("ad2dc3_play_visits") || [];
@@ -73,7 +76,44 @@ let failed = 0;
 function check(name, cond, info) { if (cond) console.log("ok   " + name); else { failed++; console.log("FAIL " + name + " " + JSON.stringify(info)); } }
 
 (async () => {
-  // 1) leg in progress -> games/restart; the restarted leg repeats turn keys, its visits still go to DartCounter
+  // 1) leg in progress -> Undo (one dart or one change of turn per call, like the app) back to the start of the leg;
+  //    the turns shown again while rewinding are not sent; the restarted leg repeats turn keys, its visits still go out
+  {
+    const store = makeStore();
+    let pg;
+    const history = []; // states before each action, like the server's undo
+    const play = s => { history.push(pg.lastState); pg.lastState = s; pg.send(s); };
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") {
+        if (!history.length || history[history.length - 1] === undefined) return { ok: false, status: 400, err: "HTTP 400 nothing to undo" };
+        const prev = history.pop(); pg.lastState = prev; setTimeout(() => pg.send(prev), 30); return { ok: true, status: 200, data: null };
+      }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.lastState = undefined;
+    play(state({}));
+    history.length = 0; // start of the leg: nothing before it can be undone
+    const darts = [T(20, 1), T(20, 1), T(20, 1)];
+    for (let i = 1; i <= 3; i++) play(state({ round: 1, turns: [{ round: 1, playerId: "p1", throws: darts.slice(0, i) }], gameScores: [501 - 20 * i] }));
+    play(state({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [441] }));
+    await sleep(300);
+    check("mid-leg: first visit (round 1) published", visits(store).length === 1 && visits(store)[0].id === "m1/0.0.1.0", visits(store));
+    order(store);
+    await sleep(2500);
+    check("mid-leg: Undo x4 back to the leg start, nothing else", pg.calls.join("|") === Array(4).fill("POST /matches/m1/undo").join("|"), pg.calls);
+    check("mid-leg: ack ok (leg od nowa, Undo)", ack(store).state === "ok" && /Undo \(4/.test(ack(store).how) && ack(store).v && /undo .* \u00d74/.test(ack(store).steps.join()), ack(store));
+    check("mid-leg: turns shown again while rewinding are not sent", visits(store).length === 1, visits(store));
+    // the restarted leg: round 1 again
+    pg.send(state({ round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(5, 1), T(1, 1), T(20, 1)] }], gameScores: [475] }));
+    pg.send(state({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [475] }));
+    await sleep(300);
+    const v = visits(store);
+    check("after restart: round 1 of the new leg is published with a new id (no duplicate filter)", v.length === 2 && v[1].id !== v[0].id && /^m1\/0\.0\.1\.0~/.test(v[1].id) && v[1].labels === "S5 S1 S20", v);
+    check("epoch saved for a reload of the game tab", (store.get("ad2dc3_play_epoch") || {}).matchId === "m1", store.get("ad2dc3_play_epoch"));
+  }
+
+  // 1b) the app's Undo refused -> games/restart (in the app's API client) gives the fresh leg
   {
     const store = makeStore();
     let pg;
@@ -82,21 +122,12 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
       return { ok: false, status: 404, err: "HTTP 404" };
     });
     await sleep(1800);
-    pg.send(state({ round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(20, 1), T(20, 1), T(20, 1)] }], gameScores: [441] }));
-    pg.send(state({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [441] }));
-    await sleep(300);
-    check("mid-leg: first visit (round 1) published", visits(store).length === 1 && visits(store)[0].id === "m1/0.0.1.0", visits(store));
+    pg.send(state({ round: 3, gameScores: [380] }));
     order(store);
     await sleep(2500);
-    check("mid-leg: POST games/restart", pg.calls.join("|") === "POST /matches/m1/games/restart", pg.calls);
-    check("mid-leg: ack ok (leg od nowa)", ack(store).state === "ok" && /games\/restart/.test(ack(store).how), ack(store));
-    // the restarted leg: round 1 again
-    pg.send(state({ round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(5, 1), T(1, 1), T(20, 1)] }], gameScores: [475] }));
-    pg.send(state({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [475] }));
-    await sleep(300);
-    const v = visits(store);
-    check("after restart: round 1 of the new leg is published with a new id (no duplicate filter)", v.length === 2 && v[1].id !== v[0].id && /^m1\/0\.0\.1\.0~/.test(v[1].id) && v[1].labels === "S5 S1 S20", v);
-    check("epoch saved for a reload of the game tab", (store.get("ad2dc3_play_epoch") || {}).matchId === "m1", store.get("ad2dc3_play_epoch"));
+    check("undo refused -> POST games/restart", pg.calls.join("|") === "POST /matches/m1/undo|POST /matches/m1/games/restart", pg.calls);
+    check("undo refused -> ack ok with both HTTP codes", ack(store).state === "ok" && /games\/restart/.test(ack(store).how) &&
+      ack(store).steps.join("|") === "POST /matches/m1/undo \u2192 HTTP 404|POST /matches/m1/games/restart \u2192 HTTP 200", ack(store));
   }
 
   // 2) leg finished in Autodarts (our checkout) -> games/next
@@ -131,7 +162,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     order(store);
     await sleep(3000);
     check("restart refused -> from-match, DELETE old match, start lobby (in this order)",
-      pg.calls.join("|") === "POST /matches/m1/games/restart|POST /lobbies/from-match/m1|DELETE /matches/m1|POST /lobbies/L1/start", pg.calls);
+      pg.calls.join("|") === "POST /matches/m1/undo|POST /matches/m1/games/restart|POST /lobbies/from-match/m1|DELETE /matches/m1|POST /lobbies/L1/start", pg.calls);
     check("new match: ack ok", ack(store).state === "ok" && /nowy mecz X01/.test(ack(store).how), ack(store));
     check("new match: the tab goes to it", pg.nav.length === 1, pg.nav);
   }
@@ -152,15 +183,16 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     order(store);
     await sleep(3500);
     check("from-match refused -> surrender, from-match again, start (no DELETE)",
-      pg.calls.join("|") === "POST /matches/m1/games/restart|POST /lobbies/from-match/m1|POST /matches/m1/surrender|POST /lobbies/from-match/m1|POST /lobbies/L2/start", pg.calls);
+      pg.calls.join("|") === "POST /matches/m1/undo|POST /matches/m1/games/restart|POST /lobbies/from-match/m1|POST /matches/m1/surrender|POST /lobbies/from-match/m1|POST /lobbies/L2/start", pg.calls);
     check("surrender path: ack ok, tab goes to the new match", ack(store).state === "ok" && /opuszczony/.test(ack(store).how) && pg.nav.length === 1, { ack: ack(store), nav: pg.nav });
-    check("every API step is in the game tab log", pg.logs.filter(l => /Reset API: /.test(l)).length === 5 && pg.logs.some(l => /Reset: polecenie .* stan|Reset: polecenie .*runda 3/.test(l)), pg.logs.filter(l => /Reset/.test(l)));
+    check("every API step is in the game tab log", pg.logs.filter(l => /Reset API: /.test(l)).length === 6 && pg.logs.some(l => /Reset: polecenie .* stan|Reset: polecenie .*runda 3/.test(l)), pg.logs.filter(l => /Reset/.test(l)));
   }
 
   // 4b) nothing works -> clear failure, nothing deleted
   {
     const store = makeStore();
     const pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") return { ok: false, status: 400, err: "HTTP 400" };
       if (p === "/matches/m1/games/restart") return { ok: false, status: 400, err: "HTTP 400" };
       if (p === "/lobbies/from-match/m1") return { ok: false, status: 409, err: "HTTP 409 match not finished" };
       if (p === "/matches/m1/surrender") return { ok: false, status: 403, err: "HTTP 403" };
@@ -203,7 +235,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     await sleep(2500);
     const v = visits(store);
     check("turn in progress -> its visit is published (not lost)", v.length === 1 && v[0].labels === "T19 S19", v);
-    check("then games/restart, ack ok", pg.calls.join("|") === "POST /matches/m1/games/restart" && ack(store).state === "ok", { calls: pg.calls, ack: ack(store) });
+    check("then the reset (undo refused here -> games/restart), ack ok", pg.calls.join("|") === "POST /matches/m1/undo|POST /matches/m1/games/restart" && ack(store).state === "ok", { calls: pg.calls, ack: ack(store) });
   }
 
   // 7) Autodarts already at the start of a leg -> nothing to do
@@ -235,6 +267,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     const store = makeStore();
     let pg;
     const atc = o => state(Object.assign({ variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, gameScores: [21] }, o));
+    const dcBeat = dcAtc(store);
     pg = makePlay(store, (m, p) => {
       if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(atc({ leg: 1, gameScores: [0], round: 1 })), 50); return { ok: true, status: 200 }; }
       return { ok: false, status: 404, err: "HTTP 404" };
@@ -245,15 +278,19 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     await sleep(300);
     store.set("ad2dc3_reset_cmd", { id: "dc-atc1", ts: Date.now(), kind: "atc", won: false });
     await sleep(2500);
-    check("ATC finished -> POST games/next, ack ok", pg.calls.join("|") === "POST /matches/m1/games/next" && ack(store).state === "ok" && /ATC/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+    // 3.5.5: the game tab corrects the 25 (refused here) and restarts Autodarts by itself; the order from DartCounter
+    // meets the restart: one games/next in total
+    check("ATC finished on 25 -> one POST games/next in total, ack ok", pg.calls.filter(c => /games\/next/.test(c)).length === 1 && ack(store).state === "ok" && /ATC/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
     pg.send(atc({ leg: 1, round: 1, turns: [{ round: 1, playerId: "p1", throws: [T(25, 2)] }] }));
     pg.send(atc({ leg: 1, round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }] }));
     await sleep(300);
     const v = visits(store);
     check("ATC: darts after the new game are published (new id)", v.length === 2 && v[1].labels === "BULL" && v[1].id !== v[0].id && v[0].finished === true, v);
+    const before = pg.calls.length;
     order(store, "leg");
     await sleep(1500);
-    check("X01 order (leg end) on an ATC game -> fail, nothing called", pg.calls.length === 1 && ack(store).state === "fail" && /X01/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+    check("X01 order (leg end) on an ATC game -> fail, nothing called", pg.calls.length === before && ack(store).state === "fail" && /X01/.test(ack(store).how), { calls: pg.calls, ack: ack(store) });
+    clearInterval(dcBeat);
   }
 
   // 11) 3.5.4 X01: won leg in Autodarts (checkout, score 0) -> next leg by itself after the visit went out
@@ -382,6 +419,107 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     pg.send(state({ round: 3, gameScores: [55], turns: [{ round: 3, playerId: "p1", throws: [T(20, 1), T(25, 1)] }] }));
     await sleep(500);
     check("X01: 25 is never corrected", pg.calls.length === 0, pg.calls);
+  }
+
+  // 3.5.5: data shaped like real Autodarts frames: throws with an id, 1-based set/leg, winner -1, ATC state.targets
+  const R = (id, n, m) => Object.assign(T(n, m), { id });
+  const real = o => state(Object.assign({ set: 1, leg: 1, winner: -1, players: [{ id: "p1", name: "Ja", cpuPPR: null }] }, o));
+  // a dart thrown while the leg is rewound: it is undone as well and listed for DartCounter (never a silent loss)
+  {
+    const store = makeStore();
+    let pg;
+    const history = [];
+    const play = s => { history.push(pg.lastState); pg.lastState = s; pg.send(s); };
+    let undos = 0;
+    pg = makePlay(store, (m, p) => {
+      if (p !== "/matches/m1/undo") return { ok: false, status: 404, err: "HTTP 404" };
+      if (!history.length) return { ok: false, status: 400, err: "HTTP 400" };
+      undos++;
+      const prev = history.pop(); pg.lastState = prev;
+      setTimeout(() => {
+        pg.send(prev);
+        if (undos === 2) play(Object.assign({}, prev, { turns: [{ round: prev.round, playerId: "p1", throws: prev.turns[0].throws.concat([R("new1", 19, 3)]) }] })); // the player throws
+      }, 30);
+      return { ok: true, status: 200 };
+    });
+    await sleep(1800);
+    pg.lastState = real({});
+    pg.send(pg.lastState);
+    const d = [R("a1", 20, 1), R("a2", 20, 1), R("a3", 20, 1)];
+    for (let i = 1; i <= 3; i++) play(real({ round: 1, turns: [{ round: 1, playerId: "p1", throws: d.slice(0, i) }], gameScores: [501 - 20 * i] }));
+    play(real({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [441] }));
+    await sleep(300);
+    order(store);
+    await sleep(3000);
+    const a = ack(store);
+    check("dart during the rewind -> undone too, leg fresh, ack ok", a.state === "ok" && pg.lastState.gameScores[0] === 501 && pg.lastState.turns[0].throws.length === 0, { a, calls: pg.calls });
+    check("dart during the rewind -> listed in the answer (T19), never a visit", Array.isArray(a.extra) && a.extra.join() === "T19" && visits(store).length === 1, { a, v: visits(store) });
+  }
+  // DartCounter sends the same order again (no answer seen there yet): answered again, run once
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/restart") { setTimeout(() => pg.send(real({})), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(real({ round: 3, gameScores: [380] }));
+    const cmd = { id: "dc-again", ts: Date.now(), kind: "leg", won: false, v: "3.5.5", attempt: 1 };
+    store.set("ad2dc3_reset_cmd", cmd);
+    await sleep(150);
+    check("order -> 'received' answer at once, with this version", ["received", "busy", "ok"].includes(ack(store).state) && ack(store).id === "dc-again" && !!ack(store).v, ack(store));
+    await sleep(2000);
+    const ts1 = ack(store).ts;
+    store.set("ad2dc3_reset_cmd", Object.assign({}, cmd, { attempt: 2, ts: Date.now() }));
+    await sleep(800);
+    check("same order again -> answered again (new ts), not run twice", ack(store).state === "ok" && ack(store).ts > ts1 &&
+      pg.calls.filter(c => /games\/restart/.test(c)).length === 1, { calls: pg.calls, ack: ack(store) });
+  }
+  // Around the Clock ended by the outer bull: the game tab starts the next Autodarts game by itself (no DartCounter order)
+  {
+    const store = makeStore();
+    let pg, after = null;
+    const targets = (ci, done) => { const t = []; for (let n = 1; n <= 20; n++) t.push({ number: n, bed: "Full", hits: n - 1 < ci ? 1 : 0, count: n - 1 < ci ? 1 : 0 }); t.push({ number: 25, bed: "Full", hits: done ? 1 : 0, count: done ? 1 : 0 }); return [t]; };
+    const dcBeat = dcAtc(store);
+    const atcR = (o, throws, ci, done) => real(Object.assign({ variant: "ATC", settings: { mode: "Full", order: "1-20-Bull", hits: 1 }, round: 7, gameScores: [ci],
+      turns: [{ id: "turn7", round: 7, playerId: "p1", throws }], state: { targets: targets(ci, done), currentTargets: [ci] } }, o));
+    pg = makePlay(store, (m, p) => {
+      if (m === "PATCH") return { ok: false, status: 400, err: "HTTP 400 game finished" };
+      if (p === "/matches/m1/games/next") {
+        after = visits(store).length;
+        setTimeout(() => pg.send(atcR({ leg: 2, round: 1, turns: [{ id: "turn1", round: 1, playerId: "p1", throws: [] }] }, [], 0)), 50);
+        return { ok: true, status: 200 };
+      }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(atcR({}, [R("b1", 19, 1)], 19));
+    pg.send(atcR({}, [R("b1", 19, 1), R("b2", 20, 1)], 20));
+    pg.send(atcR({ finished: true, gameFinished: true, winner: 0 }, [R("b1", 19, 1), R("b2", 20, 1), R("b3", 25, 1)], 20, true));
+    await sleep(4000);
+    const an = store.get("ad2dc3_auto_next") || {};
+    check("ATC over on 25 -> PATCH (refused), then POST games/next by the game tab itself", pg.calls.join("|") === "PATCH /matches/m1/throws|POST /matches/m1/games/next", pg.calls);
+    check("ATC over on 25 -> the visit S19 S20 25 went out before the restart", after === 1 && visits(store)[0].labels === "S19 S20 25" && visits(store)[0].finished === true, { after, v: visits(store) });
+    check("ATC over on 25 -> result for the DartCounter panel (kind atc, ok)", an.kind === "atc" && an.ok === true && /games\/next/.test(an.how), an);
+    check("ATC over on 25 -> no order from DartCounter needed", !store.get("ad2dc3_reset_cmd"), store.get("ad2dc3_reset_cmd"));
+    clearInterval(dcBeat);
+    // no DartCounter tab playing Around the Clock (closed, X01, other app): Autodarts games are never restarted
+    const store3 = makeStore();
+    const pg3 = makePlay(store3, () => ({ ok: true, status: 200 }));
+    await sleep(1800);
+    pg3.send(atcR({}, [R("d1", 20, 1)], 20));
+    pg3.send(atcR({ finished: true, gameFinished: true, winner: 0 }, [R("d1", 20, 1), R("d2", 25, 1)], 20, true));
+    await sleep(6500);
+    check("ATC over on 25 without a DartCounter tab on Around the Clock -> no games/next, no new match", !pg3.calls.some(c => /games\/next|lobbies/.test(c)), pg3.calls);
+    // ended on 50: nothing to restart
+    const store2 = makeStore();
+    const pg2 = makePlay(store2, () => ({ ok: true, status: 200 }));
+    await sleep(1800);
+    pg2.send(atcR({}, [R("c1", 20, 1)], 20));
+    pg2.send(atcR({ finished: true, gameFinished: true, winner: 0 }, [R("c1", 20, 1), R("c2", 25, 2)], 20, true));
+    await sleep(2500);
+    check("ATC over on 50 -> no restart, no correction", pg2.calls.length === 0, pg2.calls);
   }
 
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");

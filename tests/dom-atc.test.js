@@ -12,6 +12,7 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const SCRIPT = fs.readFileSync(path.join(__dirname, "..", "autodarts-dartcounter-bridge.user.js"), "utf8");
+const VERSION = /@version\s+(\S+)/.exec(SCRIPT)[1];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const seg = (n, m) => ({ segment: { name: (["M", "S", "D", "T"][m]) + n, number: n, multiplier: m, bed: m === 0 ? "Outside" : m === 2 ? "Double" : m === 3 ? "Triple" : "SingleInner" } });
 const T = (n, m) => ({ segmentName: (["M", "S", "D", "T"][m]) + n, segmentNumber: n, multiplier: m, bed: m === 0 ? "Outside" : "Single" });
@@ -95,7 +96,7 @@ function publish(store, id, throws, variant, settings, finished) {
   list.push({ id, ts: Date.now(), reason: finished ? "koniec lega/meczu" : "następna tura", throws, labels: "", variant, settings, finished: !!finished });
   store.map.set("ad2dc3_play_visits", JSON.stringify(list));
 }
-const heartbeat = store => setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/a1" })), 400);
+const heartbeat = store => setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/a1" })), 400);
 const ATC = { order: "1-20-Bull", mode: "Full", hits: 1 };
 
 let failed = 0;

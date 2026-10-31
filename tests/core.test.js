@@ -572,5 +572,83 @@ test("match tracker epoch: after reset the repeated turn keys are new visits", (
   assert.equal(out[1].darts[0].label, "S5");
 });
 
+// 3.5.5: Autodarts ATC state as the app and darts-caller read it: state.targets[p][state.currentTargets[p]] with
+// number / bed / hits / count; 1-based set/leg/round; winner -1 until somebody wins; throws carry an id.
+const atcState = (o, throws, ci) => {
+  const targets = [];
+  for (let n = 1; n <= 20; n++) targets.push({ number: n, bed: "Full", hits: n - 1 < ci ? 1 : 0, count: n - 1 < ci ? 1 : 0 });
+  targets.push({ number: 25, bed: "Full", hits: 0, count: 0 });
+  return Object.assign({ id: "a1", variant: "ATC", settings: { mode: "Full", order: "1-20-Bull", hits: 1 }, set: 1, leg: 1, round: 7, player: 0,
+    players: [{ id: "p", name: "Ja", cpuPPR: null }], winner: -1, finished: false, gameFinished: false, gameScores: [ci],
+    turns: [{ id: "t7", round: 7, playerId: "p", throws }], state: { targets: [targets], currentTargets: [ci] } }, o || {});
+};
+const idT = (id, name, number, bed, multiplier) => Object.assign(oldT(name, number, bed, multiplier), { id });
+test("atcTargetOf: real field names, index past the end, other names, nothing", () => {
+  assert.equal(Core.atcTargetOf(atcState({}, [], 20), 0).number, 25);
+  assert.equal(Core.atcTargetOf(atcState({}, [], 3), 0).number, 4);
+  assert.equal(Core.atcTargetOf(atcState({ state: { targets: [[{ number: 20 }, { number: 25 }]], currentTargets: [5] } }, [], 0), 0).number, 25); // game over
+  assert.equal(Core.atcTargetOf({ state: { targets: [[{ number: 7 }]], currentTarget: [0] } }, 0).number, 7);
+  assert.equal(Core.atcTargetOf({ state: { target: { number: 25, bed: "Full" } } }, 0).number, 25);
+  assert.equal(Core.atcTargetOf({ state: { targets: [[{ number: 19, count: 1 }, { number: 20, count: 0 }]], currentTargets: ["1"] } }, 0, true).number, 19); // just hit
+  assert.equal(Core.atcTargetOf({ variant: "ATC", state: {} }, 0), null);
+});
+test("atcOuterBullThrow works without readable targets (game ended by the 25)", () => {
+  const s20 = idT("a", "S20", 20, "Single", 1), s25 = idT("b", "25", 25, "SingleOuter", 1);
+  const prev = atcState({ state: {} }, [s20], 20), over = atcState({ state: {}, finished: true, gameFinished: true, winner: 0 }, [s20, s25], 20);
+  assert.equal(Core.atcOuterBullThrow(prev, over), 1);
+  assert.equal(Core.atcOuterBullThrow(prev, atcState({ state: {} }, [s20, s25], 20)), -1); // not the end, target unknown
+  assert.equal(Core.atcOuterBullThrow(atcState({}, [s20], 20), atcState({}, [s20, s25], 20)), 1); // real targets: bull
+});
+test("atcEndNeedsRestart: Autodarts ATC over on 25 (or a corrected miss) while DartCounter wants 50", () => {
+  const s20 = oldT("S20", 20, "Single", 1), s25 = oldT("25", 25, "SingleOuter", 1), bull = oldT("Bull", 25, "Double", 2), miss = oldT("M3", 3, "Outside", 0);
+  const over = throws => atcState({ finished: true, gameFinished: true, winner: 0 }, throws, 20);
+  assert.equal(Core.atcEndNeedsRestart(over([s20, s25]), true).restart, true);
+  assert.equal(Core.atcEndNeedsRestart(over([s20, s25]), true).dart, "25");
+  assert.equal(Core.atcEndNeedsRestart(over([s20, miss]), true).restart, true); // the 25 corrected to a miss, game still over
+  assert.equal(Core.atcEndNeedsRestart(over([s20, bull]), true).restart, false); // 50: DartCounter ends as well
+  assert.equal(Core.atcEndNeedsRestart(over([s20, s25]), false).restart, false); // DartCounter counts 25 too
+  assert.equal(Core.atcEndNeedsRestart(atcState({}, [s20, s25], 20), true).restart, false); // not over
+  assert.equal(Core.atcEndNeedsRestart(Object.assign(over([s25]), { variant: "X01" }), true).restart, false);
+  assert.equal(Core.atcEndNeedsRestart(atcState({ winner: 0 }, [s25], 20), true).restart, true); // winner set, flags not yet
+});
+test("turnProgress / rewindActivity: undo goes back, a new dart or a takeout goes forward", () => {
+  const x = (round, n) => ({ id: "m1", variant: "X01", set: 1, leg: 1, round, player: 0, players: [{ id: "p" }],
+    turns: [{ round, playerId: "p", throws: Array.from({ length: n }, (_, i) => oldT("S1", 1, "Single", 1)) }] });
+  const P = (r, n) => Core.turnProgress(x(r, n));
+  assert.equal(Core.rewindActivity(P(7, 0), P(6, 3)), false); // undo of the change of turn
+  assert.equal(Core.rewindActivity(P(6, 3), P(6, 2)), false); // undo of a dart
+  assert.equal(Core.rewindActivity(P(6, 2), P(6, 3)), true); // a dart thrown meanwhile
+  assert.equal(Core.rewindActivity(P(6, 3), P(7, 0)), true); // takeout meanwhile
+  assert.equal(Core.rewindActivity(P(6, 2), P(6, 2)), false);
+});
+test("dcLegInfo: DartCounter local match from IndexedDB (finished legs, winner DartBot)", () => {
+  const rec = { id: "2026-10-31 21:55:17", updated_at: 1, match: { start_score: 501, legs: [{ id: "1", winner_id: "u-cpu" }, { id: "2" }],
+    teams: [{ id: "t1", users: [{ id: "u-me", name: "guest_x", is_cpu: false }] }, { id: "t2", users: [{ id: "u-cpu", name: "DartBot", is_cpu: true }] }] } };
+  const i = Core.dcLegInfo(rec);
+  assert.equal(i.legs, 1); assert.equal(i.winner.cpu, true); assert.equal(i.winner.team, 1); assert.equal(i.vsCpu, true); assert.equal(i.start, 501);
+  rec.match.legs[1].winner_id = "u-me";
+  assert.equal(Core.dcLegInfo(rec).legs, 2); assert.equal(Core.dcLegInfo(rec).winner.cpu, false);
+  assert.equal(Core.dcLegInfo(null), null); assert.equal(Core.dcLegInfo({ match: {} }), null);
+});
+test("beatState / versionCmp: other tab closed, asleep, other version", () => {
+  const t = 1000000;
+  assert.equal(Core.beatState(null, t, "3.5.5").state, "none");
+  assert.equal(Core.beatState({ ts: t - 2000, v: "3.5.5" }, t, "3.5.5").state, "ok");
+  assert.equal(Core.beatState({ ts: t - 2000 }, t, "3.5.5").state, "old"); // 3.5.4 sends no version
+  assert.equal(Core.beatState({ ts: t - 2000, v: "3.5.4" }, t, "3.5.5").state, "old");
+  assert.equal(Core.beatState({ ts: t - 30000, v: "3.5.5" }, t, "3.5.5").state, "asleep");
+  assert.equal(Core.beatState({ ts: t - 120000, v: "3.5.5" }, t, "3.5.5").state, "closed");
+  assert.equal(Core.versionCmp("3.5.10", "3.5.5"), 1); assert.equal(Core.versionCmp("3.5.4", "3.5.5"), -1); assert.equal(Core.versionCmp("3.5.5", "3.5.5"), 0);
+});
+test("match tracker skip: old darts left by a half reset are never a visit", () => {
+  const out = [];
+  const tr = Core.createMatchTracker(v => out.push(v));
+  const m = (round, throws) => Core.parseMatch({ id: "m1", turns: [{ round, throws }], round, players: [], player: 0 });
+  tr.reset("e1"); tr.skip(m(4, [oldT("S20", 20, "Single", 1), oldT("S1", 1, "Single", 1)]));
+  tr.update(m(4, [oldT("S20", 20, "Single", 1), oldT("S1", 1, "Single", 1)])); tr.update(m(5, []));
+  tr.update(m(5, [oldT("T20", 20, "Triple", 3)])); tr.update(m(6, []));
+  assert.deepEqual(out.map(v => v.darts.map(d => d.label).join(" ")), ["T20"]);
+});
+
 if (failed) { console.log(failed + " test(s) failed"); process.exit(1); }
 console.log("all core tests passed");

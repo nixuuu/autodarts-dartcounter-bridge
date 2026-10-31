@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.5.4
+// @version      3.5.5
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,25 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.5.4
+ * AD2DC 3.5.5
+ *
+ * 3.5.5 (X01 lost leg, Around the Clock 25, diagnostics). Checked on the real app.dartcounter.net (local X01 vs DartBot,
+ *   Around the Clock) in WebKit and Chromium with a Tampermonkey-like sandbox: the end of a lost leg is seen and the
+ *   order reaches the game tab. The step that never worked for real was the Autodarts side: games/restart is in the
+ *   app's API client, but no button of the app uses it.
+ *   - Reset of an X01 leg in progress = the app's own Undo (POST /undo, one dart or one change of turn per call, never
+ *     past the start of the leg) until the leg is fresh; else games/restart; else a new match like "Play again".
+ *     Turns shown again while rewinding are not sent; a dart thrown meanwhile is listed in DartCounter ("Niewpisane").
+ *   - Orders: the game tab answers at once ("received", with its version), then every Autodarts API step with its HTTP
+ *     code, then the result. No answer within 3 s: DartCounter sends the same order again (3 tries, run once).
+ *   - Heartbeat with the version both ways: each panel says when the other tab is closed / asleep or runs another
+ *     version, and which tab to refresh.
+ *   - DartCounter leg end also from the app's saved match (IndexedDB "dartcounter-db", local matches): finished legs
+ *     and who won (DartBot = lost leg), next to the rests and the legs counter.
+ *   - Around the Clock: when Autodarts ends its game on a dart that is not the bullseye while DartCounter finishes only
+ *     on 50, the game tab itself starts the next Autodarts game (games/next like the won X01 leg, else "Play again").
+ *     The throw correction (PATCH) is still tried first (up to 4 s). Only while DartCounter plays Around the Clock with
+ *     the bridge on, and only for orders that end on the bull. ATC targets read with other field names too.
  *
  * 3.5.4 (X01): the Autodarts reset never worked in Tampermonkey: the game tab dropped every answer of its page helper
  *   (it checked ev.source === window, but a userscript's `window` is a sandbox proxy). Requests reached Autodarts, the
@@ -122,7 +140,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.5.4";
+  const VERSION = "3.5.5";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -376,6 +394,8 @@
         epoch() { return epoch; },
         // after a reset: forget the old turns, the next state is the new baseline (darts already in it are not lost)
         reset(newEpoch) { cur = null; sent.clear(); epoch = newEpoch || ""; },
+        // this turn is not a visit (e.g. old darts left by a reset that stopped half way): never send it
+        skip(m) { if (m) { cur = m; sent.add(idOf(m)); } },
         update(m) {
           if (!m) return;
           if (cur && cur.matchId !== m.matchId) { log("Nowy mecz w Autodarts: " + m.matchId); cur = null; }
@@ -636,13 +656,89 @@
       if (!raw.settings || raw.settings.mode !== "Full") return -1;
       const p = typeof raw.player === "number" ? raw.player : 0;
       if ((typeof prev.player === "number" ? prev.player : 0) !== p) return -1;
-      const ps = prev.state || {};
-      const tgt = ps.targets && ps.targets[p] && ps.currentTargets ? ps.targets[p][ps.currentTargets[p]] : null;
-      if (!tgt || (tgt.number !== 25 && tgt.number !== 50)) return -1;
       const a = parseMatch(prev), b = parseMatch(raw);
       if (!a || !b || a.key !== b.key || b.darts.length !== a.darts.length + 1) return -1;
       const d = b.darts[b.darts.length - 1];
-      return d && d.number === 25 && d.multiplier === 1 ? b.darts.length - 1 : -1;
+      if (!d || d.number !== 25 || d.multiplier !== 1) return -1;
+      // the target before this dart was the bull; without readable targets: the dart ended the game (order ..-Bull ends on the bull)
+      const tgt = atcTargetOf(prev, p);
+      const bull = tgt ? tgt.number === 25 || tgt.number === 50 : !matchOver(prev) && matchOver(raw);
+      return bull ? b.darts.length - 1 : -1;
+    }
+    function matchOver(raw) { return !!raw && (raw.finished === true || raw.gameFinished === true || (typeof raw.winner === "number" && raw.winner >= 0)); }
+    // Around the Clock: the current target of a player, whatever the state calls it. Autodarts (app code, darts-caller):
+    // state.targets[p][state.currentTargets[p]] = { number, bed, hits, count }; right after a hit the index may already
+    // point at the next target (count 0), then the one before is the target that was thrown at.
+    function atcTargetOf(raw, p, thrown) {
+      if (!raw || typeof raw !== "object") return null;
+      const st = raw.state && typeof raw.state === "object" ? raw.state : raw;
+      const pick = o => (o && typeof o === "object" && toNum(o.number) != null ? { number: toNum(o.number), bed: o.bed || o.mode || "", hits: toNum(o.hits), count: toNum(o.count) } : null);
+      const lists = [st.targets, st.Targets, st.playerTargets, raw.targets].filter(Boolean);
+      const idxs = [st.currentTargets, st.currentTarget, st.currentTargetIndex, st.targetIndex, st.currentIndex, raw.currentTargets].filter(x => x != null);
+      for (const list of lists) {
+        const own = Array.isArray(list) ? list[p] : list && list[String(p)];
+        if (!own) continue;
+        if (!Array.isArray(own)) { const t = pick(own); if (t) return t; continue; }
+        for (const ix of idxs) {
+          let i = toNum(Array.isArray(ix) ? ix[p] : typeof ix === "object" ? ix[String(p)] : ix);
+          if (i == null) continue;
+          if (i >= own.length) i = own.length - 1; // game over: index past the last target
+          let t = pick(own[i]);
+          if (t && thrown && t.count === 0 && i > 0) t = pick(own[i - 1]) || t;
+          if (t) return t;
+        }
+      }
+      for (const o of [st.target, st.currentTarget, st.targets && st.targets.current]) { const t = pick(o); if (t) return t; }
+      return null;
+    }
+    // Around the Clock: Autodarts ended its game; DartCounter with "Finish by hitting the bullseye" finishes only on 50.
+    // Restart Autodarts when the finishing dart is not the bullseye (e.g. the outer bull 25 in mode Full).
+    function atcEndNeedsRestart(raw, wantBullseye) {
+      if (!raw || !/^atc$/i.test(String(raw.variant || "")) || !matchOver(raw) || !wantBullseye) return { restart: false, why: "" };
+      const m = parseMatch(raw);
+      const last = m && m.darts.length ? m.darts[m.darts.length - 1] : null;
+      if (!last) return { restart: false, why: "brak lotek ko\u0144cz\u0105cej tury" };
+      if (last.number === 25 && last.multiplier === 2) return { restart: false, why: "zako\u0144czone na 50" };
+      return { restart: true, why: "Autodarts zako\u0144czy\u0142 gr\u0119 na " + last.label + ", DartCounter liczy tylko 50", dart: last.label };
+    }
+    // Rewind (undo back to the leg start): progress of the current turn. A frame with more darts in the same turn,
+    // or a later turn, means the player is throwing again (undo only ever goes back).
+    function turnProgress(raw) {
+      const m = parseMatch(raw);
+      if (!m) return null;
+      const set = toNum(raw.set) || 0, leg = toNum(raw.leg) || 0, round = toNum(m.round) || 0;
+      return { key: m.key, n: m.darts.length, order: ((set * 1000 + leg) * 1000 + round) * 100 + m.player };
+    }
+    function rewindActivity(prev, cur) {
+      if (!prev || !cur) return false;
+      if (cur.order > prev.order) return true;
+      return cur.key === prev.key && cur.n > prev.n;
+    }
+    // DartCounter local match saved by the app (IndexedDB "dartcounter-db", table unfinishedLocalMatches) after every
+    // change of player: finished legs and who won the last one (DartBot = is_cpu).
+    function dcLegInfo(rec) {
+      const m = rec && rec.match;
+      if (!m || !Array.isArray(m.legs) || !Array.isArray(m.teams)) return null;
+      const users = [];
+      m.teams.forEach((t, ti) => ((t && t.users) || []).forEach(u => { if (u) users.push({ id: u.id, team: ti, cpu: !!(u.is_cpu || (u.user && u.user.is_cpu)), name: u.name || "" }); }));
+      const done = m.legs.filter(l => l && l.winner_id != null);
+      const last = done[done.length - 1];
+      const w = last ? users.find(u => u.id === last.winner_id) || null : null;
+      return { id: String(rec.id), legs: done.length, winner: w, vsCpu: users.some(u => u.cpu), humans: users.filter(u => !u.cpu).length, start: toNum(m.start_score) };
+    }
+    // heartbeat of the other tab: { ts, v } -> ok | old (other version) | asleep (no beat for a while) | closed | none
+    function versionCmp(a, b) {
+      const x = String(a || "0").split(".").map(Number), y = String(b || "0").split(".").map(Number);
+      for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0 ? 1 : -1; }
+      return 0;
+    }
+    function beatState(hb, t, version) {
+      if (!hb || !hb.ts) return { state: "none", age: null };
+      const age = Math.max(0, Math.round((t - hb.ts) / 1000));
+      if (age > 90) return { state: "closed", age, v: hb.v || "" };
+      if (hb.v !== version) return { state: "old", age, v: hb.v || "" };
+      if (age > 15) return { state: "asleep", age, v: hb.v };
+      return { state: "ok", age, v: hb.v };
     }
 
     // fresh leg: every score is the start score and nobody has thrown yet in it
@@ -657,7 +753,8 @@
 
     return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
       dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts,
-      atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, interimLegEnd, resetWanted, resetPlan, isFreshLeg, atcOuterBullThrow };
+      atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, interimLegEnd, resetWanted, resetPlan, isFreshLeg, atcOuterBullThrow,
+      matchOver, atcTargetOf, atcEndNeedsRestart, turnProgress, rewindActivity, dcLegInfo, beatState, versionCmp };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -697,6 +794,7 @@
     playVisits: "ad2dc3_play_visits",
     playLive: "ad2dc3_play_live",
     playHb: "ad2dc3_play_hb",
+    dcHb: "ad2dc3_dc_hb",
     enteredIds: "ad2dc3_entered_ids",
     cloud: "ad2dc3_cloud",
     resetMode: "ad2dc3_reset_mode",
@@ -1295,21 +1393,61 @@
       if (st.frames === 1) log("Odbieram stan meczu z gry Autodarts (" + via + ")");
       const prevRaw = st.lastRaw;
       st.last = match; st.lastTs = now(); st.lastRaw = m.data;
+      if (now() - (st.beatTs || 0) > 1000) beat(); // also on frames: timers of a background tab may be slowed down
+      if (st.paused) { pausedFrame(m.data); refresh(); return; } // X01 reset of a leg in progress: old turns are not sent
+      seeThrows(match);
       if (atcBullFrame(prevRaw, m.data, match)) { refresh(); return; } // Around the Clock: 25 on the bull is being corrected
       // the same match after a reset (page reloaded): keep the visit ids of the restarted leg
       if (st.epochSaved && st.epochSaved.matchId === match.matchId && !tracker.epoch() && !tracker.current()) tracker.reset(st.epochSaved.epoch);
       tracker.update(match);
+      liveOut(match);
+      if (match.finished && /x01/i.test(match.variant)) autoNextLeg(m.data);
+      if (/^atc$/i.test(match.variant) && Core.matchOver(m.data)) autoNextAtc(m.data);
+      refresh();
+    }
+    function liveOut(match) {
       gset(K.playLive, { ts: now(), matchId: match.matchId, key: match.key, round: match.round, player: match.playerName, variant: match.variant,
         throws: match.darts.map(d => d.raw), finished: match.finished });
-      if (match.finished && /x01/i.test(match.variant)) autoNextLeg(m.data);
-      refresh();
+    }
+    // heartbeat with the version: the DartCounter tab warns when this tab is closed, asleep or runs another version
+    function beat() {
+      st.beatTs = now();
+      const m = st.last;
+      gset(K.playHb, { ts: st.beatTs, v: VERSION, frames: st.frames, path: location.pathname, variant: m ? m.variant : "", matchId: m ? m.matchId : "", busy: !!resetBusy });
+    }
+    // throw ids seen in normal play: while a leg is rewound, a dart with an unknown id is a new one (Autodarts throws carry an id)
+    function seeThrows(match) {
+      // per leg (never cleared within a leg); the first turn of the leg seen by this page: older turns (page opened
+      // mid-leg) have ids it never saw
+      const leg = match.matchId + "/" + match.key.split(".").slice(0, 2).join(".");
+      if (!st.seenLeg || st.seenLeg.leg !== leg) { st.seenLeg = { leg, order: (Core.turnProgress(st.lastRaw) || { order: 0 }).order }; st.seen = new Set(); }
+      for (const d of match.darts) if (d.raw && d.raw.id != null) st.seen.add(String(d.raw.id));
+    }
+    // While a leg in progress is reset, frames only update the state. A dart thrown meanwhile cannot go to DartCounter
+    // as a visit of its own: it is listed on the panel ("Niewpisane tury"). New = unknown throw id in a frame that does
+    // not go back (undo shows older turns again); without ids: more darts in the same turn, or a later turn.
+    function pausedFrame(raw) {
+      const p = st.paused, prog = Core.turnProgress(raw), m = Core.parseMatch(raw);
+      const back = p.prog && prog && prog.order < p.prog.order;
+      const unseenOk = m && prog && !(st.seenLeg && prog.order < st.seenLeg.order); // a turn this page saw being thrown
+      let add = [];
+      const withId = m ? m.darts.filter(d => d.raw && d.raw.id != null) : [];
+      if (withId.length) { if (unseenOk) add = withId.filter(d => !st.seen.has(String(d.raw.id)) && !p.ids.has(String(d.raw.id))); }
+      else if (m && !back && p.prog && prog && Core.rewindActivity(p.prog, prog)) add = prog.key === p.prog.key ? m.darts.slice(p.prog.n) : [null];
+      if (add.length) {
+        add.forEach(d => { if (d && d.raw && d.raw.id != null) p.ids.add(String(d.raw.id)); if (d) p.extra.push(d.label); });
+        p.more += add.length;
+        const labels = add.filter(Boolean).map(d => d.label);
+        log("Reset: w Autodarts pad\u0142a lotka w trakcie resetu" + (labels.length ? " (" + labels.join(" ") + ")" : " (nowa tura)"));
+      }
+      p.prog = prog; p.seq++;
     }
 
     // ----- Around the Clock: 25 on the bull target = miss in Autodarts (like DartCounter "Finish by hitting the bullseye") -----
     // Autodarts has no such setting (bull target in mode Full takes 25 and 50). The script corrects the 25 to a miss
     // with the app's own throw correction (PATCH throws, coordinates outside the board). Until Autodarts answers, the
-    // state with the 25 is held back (no visit, no sound). Not accepted within 4 s -> the held state goes on as usual
-    // (the visit ends the Autodarts game, DartCounter takes 25 as a miss and the game tab starts Autodarts again).
+    // state with the 25 is held back (no visit, no sound). Not accepted within 4 s -> the held state goes on as usual:
+    // the visit goes to DartCounter (25 = Miss there) and this tab starts the next Autodarts game by itself (autoNextAtc).
     function atcFixWanted() {
       const c = st.atcDc; // DartCounter ATC bull setting, published by the DartCounter tab
       return !c || c.throwout === "bullseye";
@@ -1346,12 +1484,45 @@
     function releaseAtcFix(fix, why) {
       if (st.atcFix !== fix) return;
       st.atcFix = null;
-      log("ATC: 25 zostaje w Autodarts (" + why + "). DartCounter i tak liczy 25 jako pud\u0142o; gdy Autodarts zako\u0144czy gr\u0119, karta gry zacznie j\u0105 od nowa.");
+      log("ATC: 25 zostaje w Autodarts (" + why + "). DartCounter i tak liczy 25 jako pud\u0142o; gdy Autodarts zako\u0144czy gr\u0119, karta gry sama zacznie j\u0105 od nowa.");
       const h = fix.held;
       tracker.update(h.match);
-      gset(K.playLive, { ts: now(), matchId: h.match.matchId, key: h.match.key, round: h.match.round, player: h.match.playerName, variant: h.match.variant,
-        throws: h.match.darts.map(d => d.raw), finished: h.match.finished });
+      liveOut(h.match);
+      if (Core.matchOver(h.raw)) autoNextAtc(h.raw);
       refresh();
+    }
+    // Around the Clock: Autodarts ended its game on a dart that DartCounter ("Finish by hitting the bullseye") does not
+    // count (e.g. 25 on the bull). The visit is already on its way to DartCounter (25 = Miss there). This tab starts the
+    // next Autodarts game by itself, like the won X01 leg (games/next = the app's Next button, else a new game like
+    // "Play again"), so the next darts keep coming. No order from DartCounter needed. Off: "Reset Autodarts: wy\u0142\u0105czony".
+    const atcDone = new Set();
+    function autoNextAtc(raw) {
+      const key = raw.id + "/" + raw.set + "." + raw.leg;
+      if (atcDone.has(key) || st.navigating) return;
+      const need = Core.atcEndNeedsRestart(raw, atcFixWanted());
+      atcDone.add(key);
+      if (need.restart) {
+        const dc = st.dcHb, b = Core.beatState(dc, now(), VERSION);
+        const order = String((raw.settings && raw.settings.order) || "");
+        if (order && !/bull$/i.test(order)) need.restart = false, need.why = "kolejno\u015b\u0107 " + order + " nie ko\u0144czy si\u0119 na bullu";
+        else if (b.state === "none" || b.state === "closed" || !/^\/game\/around-the-clock\b/.test(dc.path || "") || dc.enabled === false)
+          need.restart = false, need.why = need.why + ", ale DartCounter nie gra teraz Around the Clock z mostem (bez wznowienia)";
+      }
+      if (!need.restart) { if (need.why) log("ATC: koniec gry w Autodarts (" + need.why + ")"); return; }
+      log("ATC: " + need.why + " \u2192 karta gry sama zaczyna gr\u0119 w Autodarts od nowa");
+      setTimeout(async () => {
+        const cur = st.lastRaw;
+        if (st.navigating) return;
+        if (!cur || cur.id !== raw.id || !Core.matchOver(cur)) { log("ATC: Autodarts ju\u017c gra dalej (" + stateText(cur) + ")"); return; }
+        if ((st.resetMode || "leg") === "off") { log("ATC: bez wznowienia (Reset Autodarts: wy\u0142\u0105czony). Zacznij gr\u0119 w Autodarts r\u0119cznie."); return; }
+        if (resetBusy) { log("ATC: wznowienie robi ju\u017c reset z DartCounter"); return; }
+        resetBusy = true; st.steps = [];
+        let r;
+        try { r = await resetAtc(); } catch (e) { r = { ok: false, how: errText(e) }; }
+        resetBusy = false;
+        log("ATC po ko\u0144cu gry na " + (need.dart || "?") + ": " + (r.ok ? "\u2713 " : "NIE WYSZ\u0141O: ") + r.how);
+        gset(K.autoNext, { ts: now(), ok: r.ok, how: r.how, kind: "atc", v: VERSION, steps: stepList() });
+      }, 1200);
     }
 
     async function publishVisit(v) {
@@ -1507,6 +1678,27 @@
       gset(K.playEpoch, { matchId, epoch: e });
       return e;
     }
+    // reset of a leg in progress: frames stop feeding the tracker (pausedFrame) until the leg is fresh
+    function pauseTurns() { if (st.last) seeThrows(st.last); if (!st.seen) st.seen = new Set(); st.paused = { since: now(), prog: Core.turnProgress(st.lastRaw), seq: 0, extra: [], more: 0, ids: new Set() }; }
+    function resumeTurns(matchId) {
+      const p = st.paused;
+      st.paused = null;
+      newEpoch(matchId);
+      const raw = st.lastRaw, m = raw && Core.parseMatch(raw);
+      if (m && m.darts.length && !Core.isFreshLeg(raw)) tracker.skip(m); // old darts of a half reset leg: not a new visit
+      return p ? p.extra : [];
+    }
+    // API steps of the current reset, for the log and for the DartCounter tab (in the answer): "POST /x -> 200 x3"
+    function stepList() { return (st.steps || []).map(s => s.text + (s.n > 1 ? " \u00d7" + s.n : "")); }
+    function step(method, path, r) {
+      const why = !r.ok && r.err ? String(r.err).replace(/^HTTP \d+\s*/, "").slice(0, 80) : "";
+      const text = method + " " + path + " \u2192 " + (r.status ? "HTTP " + r.status : "brak odpowiedzi") + (why ? " (" + why + ")" : "");
+      const steps = st.steps || (st.steps = []);
+      const last = steps[steps.length - 1];
+      if (last && last.text === text) last.n++; else steps.push({ text, n: 1 });
+      while (steps.length > 20) steps.shift();
+      if (st.cmd && now() - (st.stepAckTs || 0) > 600) { st.stepAckTs = now(); ackWrite(st.cmd, "busy", st.ack && st.ack.state === "busy" ? st.ack.how : "karta gry resetuje"); }
+    }
     function stateText(raw) {
       if (!raw) return "brak stanu meczu";
       const t = st.last;
@@ -1518,6 +1710,7 @@
     async function call(method, path) {
       const r = await api(method, path);
       log("Reset API: " + method + " " + path + " \u2192 " + (r.ok ? "OK " + r.status : (r.err || "b\u0142\u0105d " + r.status)));
+      step(method, path, r);
       return r;
     }
     async function waitFinished(matchId, ms) {
@@ -1560,10 +1753,10 @@
       return { ok: true, how: "nowy mecz X01" + (ended ? " (" + ended + ")" : "") };
     }
     // Around the Clock: the Autodarts game is over (e.g. finished on 25), DartCounter still plays: next game / new match
-    async function resetAtc(cmd) {
+    async function resetAtc() {
       if (!/atc|around/i.test(st.last.variant)) return { ok: false, how: "w Autodarts nie jest Around the Clock (" + (st.last.variant || "?") + ")" };
       const raw = st.lastRaw, matchId = raw.id;
-      if (!raw.finished && !raw.gameFinished) return { ok: true, how: "Autodarts ATC gra dalej, nic nie zmieniam" };
+      if (!Core.matchOver(raw)) return { ok: true, how: "Autodarts ATC gra dalej, nic nie zmieniam" };
       const plan = Core.resetPlan(raw);
       log("Reset ATC: plan " + (plan === "next" ? "nast\u0119pna gra (games/next)" : "nowy mecz"));
       newEpoch(matchId);
@@ -1576,10 +1769,71 @@
       const nm = await newMatch(matchId, false);
       return nm.ok ? { ok: true, how: "ATC: " + nm.how } : nm;
     }
+    // X01 leg in progress -> back to the start of the leg with the app's own Undo (Backspace / undo button in Autodarts,
+    // POST /undo: one dart or one change of turn per call; Autodarts never undoes past the start of a leg). Each step
+    // waits for the new match state; it stops when the leg is fresh (start score, no darts).
+    async function rewindLeg(matchId) {
+      const raw0 = st.lastRaw;
+      const players = Math.max(1, (raw0.players || []).length);
+      let cap = Math.min(400, 4 * players * Math.max(1, Core.toNum(raw0.round) || 1) + 8);
+      let undos = 0, quiet = 0, more = 0;
+      log("Reset: cofam leg w Autodarts przyciskiem Undo aplikacji (" + stateText(raw0) + ")");
+      for (;;) {
+        const cur = st.lastRaw, p = st.paused;
+        if (!cur || cur.id !== matchId) return { ok: false, how: "w trakcie cofania zmieni\u0142 si\u0119 mecz w Autodarts" };
+        if (Core.isFreshLeg(cur)) return { ok: true, how: "leg od nowa: cofni\u0119ty przyciskiem Undo (" + undos + "\u00d7)" };
+        if (Core.matchOver(cur)) return { ok: false, how: "leg w Autodarts sko\u0144czy\u0142 si\u0119 w trakcie cofania" };
+        if (p.more > more) { cap += 4 * (p.more - more); more = p.more; } // darts thrown meanwhile are undone as well
+        if (undos >= cap) return { ok: false, how: "po " + undos + "\u00d7 undo leg nie jest na starcie (" + stateText(cur) + ")" };
+        const seq = p.seq;
+        const r = await call("POST", "/matches/" + matchId + "/undo");
+        if (!r.ok) {
+          if (undos && await waitFresh(matchId, 2000)) return { ok: true, how: "leg od nowa: cofni\u0119ty przyciskiem Undo (" + undos + "\u00d7)" }; // the last state came late
+          return { ok: false, how: "undo nie wyszed\u0142 po " + undos + " cofni\u0119ciach (" + (r.err || r.status) + ")", auth: r.status === 401 || /token/i.test(r.err || "") };
+        }
+        undos++;
+        const end = now() + 1500;
+        while (st.paused.seq === seq && now() < end) await sleep(30);
+        if (st.paused.seq === seq) {
+          if (++quiet >= 3) return await waitFresh(matchId, 2000) ? { ok: true, how: "leg od nowa: cofni\u0119ty przyciskiem Undo (" + undos + "\u00d7)" }
+            : { ok: false, how: "po undo nie przychodzi nowy stan meczu (" + undos + "\u00d7)" };
+        }
+        else quiet = 0;
+      }
+    }
+    // reset of an X01 leg in progress: 1) Undo back to the leg start, 2) games/restart (in the app's API client, no button
+    // in the app), 3) a new match like the app's "Play again" (the old one is ended first). Every step checked in the state.
+    async function restartLeg(matchId) {
+      pauseTurns();
+      let r;
+      try {
+        const rw = await rewindLeg(matchId);
+        if (rw.ok) r = rw;
+        else if (rw.auth) r = rw;
+        else {
+          log("Reset: cofanie: " + rw.how + " \u2192 pr\u00f3buj\u0119 games/restart");
+          const a = await call("POST", "/matches/" + matchId + "/games/restart");
+          if (a.ok && await waitFresh(matchId, 5000)) r = { ok: true, how: "leg od nowa (games/restart; cofanie: " + rw.how + ")" };
+          else if (!a.ok && (a.status === 401 || /token/i.test(a.err))) r = { ok: false, how: a.err };
+          else {
+            log("Reset: games/restart " + (a.ok ? "bez \u015bwie\u017cego lega w stanie meczu (" + stateText(st.lastRaw) + ")" : "nie wyszed\u0142") + " \u2192 nowy mecz jak \u201eZagraj ponownie\u201d");
+            // never end a match whose leg is fresh by now (a late state): a new match would lose the legs score
+            r = st.lastRaw && st.lastRaw.id === matchId && Core.isFreshLeg(st.lastRaw) ? { ok: true, how: "leg od nowa (stan meczu przyszed\u0142 p\u00f3\u017aniej)" }
+              : await newMatch(matchId, !(st.lastRaw && st.lastRaw.finished));
+          }
+        }
+      } catch (e) { r = { ok: false, how: errText(e) }; }
+      return finishRestart(matchId, r);
+    }
+    function finishRestart(matchId, r) {
+      const extra = resumeTurns(matchId);
+      if (extra.length) r.extra = extra;
+      return r;
+    }
     async function doReset(cmd) {
       log("Reset: polecenie " + cmd.id + " (" + (cmd.kind === "atc" ? "Around the Clock" : cmd.kind === "match" ? "koniec meczu" : "koniec lega") + " w DartCounter, " + (cmd.won ? "wygrany" : "przegrany") + ") | " + location.pathname + " | " + stateText(st.lastRaw));
       if (!/\/matches\//.test(location.pathname) || !st.last || !st.lastRaw) return { ok: false, how: "karta gry nie ma otwartego meczu (" + location.pathname + ", stan: " + (st.frames ? "jest" : "brak") + ")" };
-      if (cmd.kind === "atc") return resetAtc(cmd);
+      if (cmd.kind === "atc") return resetAtc();
       if (!/x01/i.test(st.last.variant)) return { ok: false, how: "w Autodarts nie jest X01 (" + (st.last.variant || "?") + ")" };
       // darts of a turn in progress are never thrown away: that turn goes to DartCounter first
       const end = now() + 90000;
@@ -1588,7 +1842,7 @@
         if (now() > end) return { ok: false, how: "w Autodarts trwa tura z lotkami (" + st.last.darts.map(d => d.label).join(" ") + "), nie resetuj\u0119" };
         if (!waited) {
           waited = true;
-          gset(K.resetAck, { id: cmd.id, ts: now(), state: "busy", how: "czekam na koniec tury w toku (" + st.last.darts.map(d => d.label).join(" ") + ")", tab: st.resetTab });
+          ackWrite(cmd, "busy", "czekam na koniec tury w toku (" + st.last.darts.map(d => d.label).join(" ") + ")");
           log("Reset: czekam, a\u017c tura w toku p\u00f3jdzie do DartCounter (" + st.last.darts.map(d => d.label).join(" ") + ")");
         }
         await sleep(300);
@@ -1596,15 +1850,17 @@
       const raw = st.lastRaw, matchId = raw.id;
       if (Core.isFreshLeg(raw)) return { ok: true, how: "Autodarts ju\u017c jest na starcie lega" };
       const plan = Core.resetPlan(raw);
-      log("Reset: plan " + (plan === "next" ? "nast\u0119pny leg" : plan === "again" ? "nowy mecz" : "leg od nowa") + (waited ? " (uwaga: tura w toku posz\u0142a ju\u017c do DartCounter)" : ""));
+      log("Reset: plan " + (plan === "next" ? "nast\u0119pny leg (games/next)" : plan === "again" ? "nowy mecz jak \u201eZagraj ponownie\u201d" : "leg od nowa (Undo do startu lega, zapas: games/restart, potem nowy mecz)") +
+        (waited ? " (uwaga: tura w toku posz\u0142a ju\u017c do DartCounter)" : ""));
+      ackWrite(cmd, "busy", plan === "next" ? "nast\u0119pny leg" : plan === "again" ? "nowy mecz" : "cofam leg do startu (Undo)");
       if (plan === "again") { newEpoch(matchId); return newMatch(matchId, false); }
-      const path = plan === "next" ? "/games/next" : "/games/restart";
+      if (plan === "restart") return restartLeg(matchId);
       newEpoch(matchId);
-      const r = await call("POST", "/matches/" + matchId + path);
-      if (r.ok && await waitFresh(matchId, 6000)) return { ok: true, how: plan === "next" ? "nast\u0119pny leg (games/next)" : "leg od nowa (games/restart)" };
-      log("Reset: " + path + (r.ok ? " bez \u015bwie\u017cego lega w stanie meczu (" + stateText(st.lastRaw) + ")" : " nie wyszed\u0142") + ", zak\u0142adam nowy mecz");
+      const r = await call("POST", "/matches/" + matchId + "/games/next");
+      if (r.ok && await waitFresh(matchId, 6000)) return { ok: true, how: "nast\u0119pny leg (games/next)" };
+      log("Reset: games/next" + (r.ok ? " bez \u015bwie\u017cego lega w stanie meczu (" + stateText(st.lastRaw) + ")" : " nie wyszed\u0142") + ", zak\u0142adam nowy mecz");
       if (!r.ok && (r.status === 401 || /token/i.test(r.err))) return { ok: false, how: r.err };
-      if (st.lastRaw && st.lastRaw.id === matchId && Core.isFreshLeg(st.lastRaw)) return { ok: true, how: "leg od nowa (" + path + ", p\u00f3\u017aniej)" };
+      if (st.lastRaw && st.lastRaw.id === matchId && Core.isFreshLeg(st.lastRaw)) return { ok: true, how: "nast\u0119pny leg (games/next, p\u00f3\u017aniej)" };
       return newMatch(matchId, !(st.lastRaw && st.lastRaw.finished));
     }
     // X01: a won leg in Autodarts (leg / match finished by the checkout) -> next leg by itself, like its Next button.
@@ -1621,7 +1877,7 @@
         if (!cur || cur.id !== raw.id || !(cur.finished || cur.gameFinished)) { log("Autodarts: leg ju\u017c przeszed\u0142 dalej (" + stateText(cur) + ")"); return; }
         if ((st.resetMode || "leg") === "off") { log("Autodarts: wygrany leg, bez przej\u015bcia dalej (Reset Autodarts: wy\u0142\u0105czony)"); return; }
         if (resetBusy) { log("Autodarts: wygrany leg, przej\u015bcie dalej robi ju\u017c reset z DartCounter"); return; }
-        resetBusy = true;
+        resetBusy = true; st.steps = [];
         let r;
         try {
           const plan = Core.resetPlan(cur);
@@ -1636,61 +1892,108 @@
         } catch (e) { r = { ok: false, how: errText(e) }; }
         resetBusy = false;
         log("Autodarts po wygranym legu: " + (r.ok ? "\u2713 " : "NIE WYSZ\u0141O: ") + r.how);
-        gset(K.autoNext, { ts: now(), ok: r.ok, how: r.how });
+        gset(K.autoNext, { ts: now(), ok: r.ok, how: r.how, kind: "x01", v: VERSION, steps: stepList() });
       }, 2500);
     }
     let resetBusy = false;
+    // Orders from the DartCounter tab (shared userscript storage). Answer at once ("received", with this version),
+    // then "busy" steps with every API answer, then "ok" / "fail". DartCounter sends the same order again when no answer
+    // arrives within 3 s: the same id is answered again, never run twice.
+    function ackWrite(cmd, state, how, extra) {
+      st.ack = Object.assign({ id: cmd.id, ts: now(), state, how, tab: st.resetTab, v: VERSION, steps: stepList() }, extra || {});
+      return gset(K.resetAck, st.ack);
+    }
     async function checkReset() {
-      if (resetBusy) return;
       const cmd = await gget(K.resetCmd, null);
-      if (!cmd || cmd.id === st.resetSeen) return;
-      st.resetSeen = cmd.id;
+      if (!cmd || !cmd.id) return;
+      if (cmd.id === st.resetSeen) {
+        if ((cmd.attempt || 1) !== st.resetAttempt && st.ack && st.ack.id === cmd.id) {
+          st.resetAttempt = cmd.attempt || 1;
+          log("Reset: DartCounter ponowi\u0142 polecenie " + cmd.id + " (pr\u00f3ba " + st.resetAttempt + "), odpowiadam jeszcze raz");
+          gset(K.resetAck, Object.assign({}, st.ack, { ts: now() }));
+        }
+        return;
+      }
+      if (st.cmd && resetBusy) { // another order of DartCounter is running: this one waits; DartCounter learns it arrived
+        if (st.queued !== cmd.id) { st.queued = cmd.id; gset(K.resetAck, { id: cmd.id, ts: now(), state: "received", how: "czeka na koniec poprzedniego resetu", tab: "", v: VERSION, steps: [] }); }
+        return;
+      }
+      if (!st.lastRaw && now() - cmd.ts < 12000) return; // match state not known yet (page just opened): a moment later
+      st.resetSeen = cmd.id; st.resetAttempt = cmd.attempt || 1;
       if (now() - cmd.ts > 60000) { log("Reset: pomijam stare polecenie " + cmd.id + " (" + Math.round((now() - cmd.ts) / 1000) + " s)"); return; }
       const tab = Math.random().toString(36).slice(2, 8);
       const prev = await gget(K.resetAck, null);
-      if (prev && prev.id === cmd.id) { log("Reset: polecenie " + cmd.id + " wykonuje inna karta gry"); return; }
-      st.resetTab = tab;
-      await gset(K.resetAck, { id: cmd.id, ts: now(), state: "busy", how: "karta gry resetuje", tab });
+      // another game tab works on it (fresh answer from it) or has finished it
+      if (prev && prev.id === cmd.id && prev.tab && prev.tab !== tab && st.takeover !== cmd.id && (prev.state === "ok" || prev.state === "fail" || now() - prev.ts < 4000)) { log("Reset: polecenie " + cmd.id + " wykonuje inna karta gry"); return; }
+      st.resetTab = tab; st.steps = []; st.cmd = cmd;
+      log("Reset: odebrano polecenie " + cmd.id + " z DartCountera (" + (cmd.v ? "wersja " + cmd.v : "starsza wersja") + ", pr\u00f3ba " + (cmd.attempt || 1) + ")");
+      await ackWrite(cmd, "received", "karta gry odebra\u0142a polecenie");
       await sleep(200);
       const mine = await gget(K.resetAck, null);
-      if (!mine || mine.tab !== tab) { log("Reset: polecenie " + cmd.id + " wykonuje inna karta gry"); return; }
+      if (!mine || mine.tab !== tab) { st.cmd = null; log("Reset: polecenie " + cmd.id + " wykonuje inna karta gry"); return; }
       for (let i = 0; resetBusy && i < 100; i++) await sleep(150); // the auto next leg may be running: then this order sees a fresh leg
       resetBusy = true;
+      ackWrite(cmd, "busy", "karta gry resetuje");
       let r;
       try { r = await doReset(cmd); } catch (e) { r = { ok: false, how: errText(e) }; }
       resetBusy = false;
-      log("Reset Autodarts: " + (r.ok ? "\u2713 " : "NIE WYSZED\u0141: ") + r.how);
-      await gset(K.resetAck, { id: cmd.id, ts: now(), state: r.ok ? "ok" : "fail", how: r.how, tab });
+      log("Reset Autodarts: " + (r.ok ? "\u2713 " : "NIE WYSZED\u0141: ") + r.how + (r.extra ? " | lotki rzucone w trakcie resetu nie posz\u0142y do DartCounter: " + r.extra.join(" ") : ""));
+      await ackWrite(cmd, r.ok ? "ok" : "fail", r.how, r.extra ? { extra: r.extra } : null);
+      st.cmd = null;
     }
     if (typeof GM_addValueChangeListener === "function") { try { GM_addValueChangeListener(K.resetCmd, () => { checkReset(); }); } catch (_) {} }
-    gget(K.resetCmd, null).then(c => { if (c) st.resetSeen = c.id; }); // an old order is not for this page
+    // an order from before this page is not for it, except one a game tab was still working on (e.g. this tab moved to a
+    // new match while the order waited): that one is taken over here
+    Promise.all([gget(K.resetCmd, null), gget(K.resetAck, null)]).then(([c, a]) => {
+      if (!c) return;
+      if (a && a.id === c.id && (a.state === "received" || a.state === "busy") && now() - c.ts < 15000) { st.takeover = c.id; return; }
+      st.resetSeen = c.id; st.resetAttempt = c.attempt || 1;
+    });
     setTimeout(() => setInterval(checkReset, 500), 1500);
     gget(K.playEpoch, null).then(e => { st.epochSaved = e; });
-    const readAtcDc = () => gget(K.atcDc, null).then(c => { st.atcDc = c; }).then(() => gget(K.resetMode, "leg")).then(m => { st.resetMode = m; });
+    const readAtcDc = () => gget(K.atcDc, null).then(c => { st.atcDc = c; }).then(() => gget(K.resetMode, "leg")).then(m => { st.resetMode = m; })
+      .then(() => gget(K.dcHb, null)).then(h => { st.dcHb = h; });
     readAtcDc(); setInterval(readAtcDc, 2000);
 
     gget(K.panelOpen, false).then(v => ui.mount(v));
     log("Start " + VERSION + " na karcie gry " + location.pathname + " (" + managerName() + ")");
     setInterval(refresh, 1000);
-    setInterval(() => gset(K.playHb, { ts: now(), frames: st.frames, path: location.pathname }), 1000);
+    setInterval(beat, 1000);
 
     function refresh() {
       const m = st.last;
       const age = st.lastTs ? Math.round((now() - st.lastTs) / 1000) + " s temu" : "jeszcze nic";
       const onMatch = /\/matches\//.test(location.pathname);
+      const dc = beatInfo(st.dcHb, "DartCounter");
+      if (dc.state !== st.dcBeatState) { st.dcBeatState = dc.state; if (dc.state !== "none" || st.frames) log("Karta DartCounter: " + dc.text); }
       ui.set("rows", [
         ["Wersja", VERSION],
         ["Stan meczu", st.frames ? "OK (" + age + ", " + Object.keys(st.via).join(" + ") + ")" : "brak"],
         ["Mecz", m ? (m.variant || "?") + ", runda " + m.round + ", gracz " + (m.playerName || m.player) : "-"],
         ["Lotki teraz", m && m.darts.length ? m.darts.map(d => d.label).join(" ") + " = " + m.darts.reduce((a, d) => a + d.score, 0) : "-"],
-        ["Wys\u0142ane tury", String(st.published) + (st.lastVisit ? " (ostatnia: " + st.lastVisit.labels + ")" : "")]
+        ["Wys\u0142ane tury", String(st.published) + (st.lastVisit ? " (ostatnia: " + st.lastVisit.labels + ")" : "")],
+        ["Karta DartCounter", dc.text]
       ]);
-      ui.set("hint", st.frames ? "Wynik idzie do DartCounter po zako\u0144czeniu tury (wyj\u0119cie lotek / nast\u0119pna tura)."
+      ui.set("hint", dc.warn ? dc.warn : st.frames ? "Wynik idzie do DartCounter po zako\u0144czeniu tury (wyj\u0119cie lotek / nast\u0119pna tura)."
         : onMatch ? "Nie widz\u0119 stanu meczu. Od\u015bwie\u017c t\u0119 kart\u0119 (Cmd+R) i rzu\u0107 lotk\u0119." : "Otw\u00f3rz gr\u0119 X01 w Autodarts.");
-      ui.set("err", m && m.variant && !/x01/i.test(m.variant) ? "To nie jest gra X01 (" + m.variant + ")." : "");
-      ui.set("dot", st.frames ? "#22c55e" : onMatch ? "#ef4444" : "#f59e0b");
-      ui.set("pill", "AD2DC " + VERSION + (st.frames ? " gra \u2713" + (st.published ? " " + st.published : "") : onMatch ? " brak stanu" : " gra"));
+      ui.set("err", m && m.variant && !/x01|atc/i.test(m.variant) ? "To nie jest gra X01 ani Around the Clock (" + m.variant + ")." : "");
+      ui.set("dot", dc.warn ? "#f59e0b" : st.frames ? "#22c55e" : onMatch ? "#ef4444" : "#f59e0b");
+      ui.set("pill", "AD2DC " + VERSION + (dc.state === "old" ? ": od\u015bwie\u017c " + (dc.newer ? "t\u0119 kart\u0119" : "kart\u0119 DartCounter") : dc.state === "closed" ? ": DartCounter zamkni\u0119ty"
+        : st.frames ? " gra \u2713" + (st.published ? " " + st.published : "") : onMatch ? " brak stanu" : " gra"));
     }
+  }
+
+  // other tab's heartbeat -> panel text and warning: other version (refresh the older tab), closed, asleep
+  function beatInfo(hb, name) {
+    const b = Core.beatState(hb, now(), VERSION);
+    const other = b.v || "sprzed 3.5.5";
+    const newer = !!b.v && Core.versionCmp(b.v, VERSION) > 0;
+    if (b.state === "none") return { state: b.state, warn: "", text: "brak sygna\u0142u (karta " + name + " nieotwarta)" };
+    if (b.state === "closed") return { state: b.state, warn: "Karta " + name + " jest zamkni\u0119ta albo u\u015bpiona (brak sygna\u0142u od " + b.age + " s). Otw\u00f3rz j\u0105 i od\u015bwie\u017c.", text: "ZAMKNI\u0118TA (brak sygna\u0142u od " + b.age + " s)" };
+    if (b.state === "old") return { state: b.state, newer, warn: newer ? "Karta " + name + " ma nowsz\u0105 wersj\u0119 " + other + ", ta karta " + VERSION + ". Od\u015bwie\u017c T\u0118 kart\u0119 (Cmd+R)."
+      : "Karta " + name + " ma " + (b.v ? "wersj\u0119 " + b.v : "starsz\u0105 wersj\u0119 (sprzed 3.5.5)") + ", ta karta " + VERSION + ". Od\u015bwie\u017c kart\u0119 " + name + " (Cmd+R).", text: "WERSJA " + other + " \u2260 " + VERSION + " (od\u015bwie\u017c " + (newer ? "t\u0119 kart\u0119" : "j\u0105") + ")" };
+    if (b.state === "asleep") return { state: b.state, warn: "", text: "brak sygna\u0142u od " + b.age + " s (karta w tle?), wersja " + b.v };
+    return { state: b.state, warn: "", text: "OK, wersja " + b.v + (hb.path ? " (" + hb.path + ")" : "") };
   }
 
   // =====================================================================
@@ -1830,7 +2133,9 @@
       playLoop();
       queueLoop();
       setInterval(watchRemaining, 400);
+      setInterval(watchStore, 1500);
       setInterval(refreshPanel, 500);
+      setInterval(() => { if (S.leader) gset(K.dcHb, { ts: now(), v: VERSION, path: location.pathname, enabled: S.enabled, source: S.source }); }, 1000);
     })();
 
     // ----- page helpers -----
@@ -2087,8 +2392,11 @@
         if (an && an.ts !== S.autoNextTs) {
           const first = S.autoNextTs === undefined;
           S.autoNextTs = an.ts; S.autoNext = an;
-          if (!first && !an.ok) setErr("Autodarts nie przeszed\u0142 sam do kolejnego lega: " + an.how + ". Kliknij \u201eNext Leg\u201d w Autodarts.", { autodarts: an });
-          else if (!first) log("Autodarts po wygranym legu \u2713 " + an.how);
+          const what = an.kind === "atc" ? "ATC: karta gry sama wznowi\u0142a Autodarts" : "Autodarts po wygranym legu";
+          if (!first && Array.isArray(an.steps)) an.steps.forEach(x => log(what + ": API " + x));
+          if (!first && !an.ok) setErr((an.kind === "atc" ? "ATC: Autodarts nie zacz\u0105\u0142 gry od nowa: " + an.how + ". Kliknij \u201eNext\u201d w Autodarts."
+            : "Autodarts nie przeszed\u0142 sam do kolejnego lega: " + an.how + ". Kliknij \u201eNext Leg\u201d w Autodarts."), { autodarts: an });
+          else if (!first) log(what + " \u2713 " + an.how);
         }
         if (S.source === "play" && S.playLive && S.playLive.ts !== S.playLiveSeenTs) {
           S.playLiveSeenTs = S.playLive.ts;
@@ -2568,23 +2876,83 @@
       if (es && !S.endScreen) legEnded("match", "ekran ko\u0144ca meczu");
       S.endScreen = es;
     }
+    // DartCounter's own state of a local match: the app saves it (IndexedDB "dartcounter-db", table
+    // unfinishedLocalMatches) on every change of player, also right when a new leg starts. Independent of the page
+    // layout: finished legs and the winner of the last one (DartBot or a player). Read only, never written.
+    function readDcStore() {
+      return new Promise(resolve => {
+        let done = false;
+        const fin = v => { if (!done) { done = true; resolve(v); } };
+        setTimeout(() => fin(null), 3000);
+        try {
+          const Wp = typeof unsafeWindow !== "undefined" && unsafeWindow ? unsafeWindow : window;
+          const idb = Wp.indexedDB || (typeof indexedDB !== "undefined" ? indexedDB : null);
+          if (!idb) return fin(null);
+          const rq = idb.open("dartcounter-db");
+          rq.onupgradeneeded = () => { try { rq.transaction.abort(); } catch (_) {} }; // no app database: never create one
+          rq.onerror = () => fin(null);
+          rq.onblocked = () => fin(null);
+          rq.onsuccess = () => {
+            const db = rq.result;
+            const close = () => { try { db.close(); } catch (_) {} };
+            db.onversionchange = close;
+            try {
+              if (!db.objectStoreNames.contains("unfinishedLocalMatches")) { close(); return fin(null); }
+              const os = db.transaction("unfinishedLocalMatches", "readonly").objectStore("unfinishedLocalMatches");
+              const c = (os.indexNames.contains("updated_at") ? os.index("updated_at") : os).openCursor(null, "prev");
+              c.onsuccess = () => { const v = c.result ? c.result.value : null; close(); fin(v); };
+              c.onerror = () => { close(); fin(null); };
+            } catch (_) { close(); fin(null); }
+          };
+        } catch (_) { fin(null); }
+      });
+    }
+    async function watchStore() {
+      if (S.storeBusy) return;
+      if (atcPage() || !/^\/game\/match\b/.test(location.pathname)) { S.storeSnap = null; return; }
+      S.storeBusy = true;
+      try {
+        let info = null;
+        try { info = Core.dcLegInfo(await readDcStore()); } catch (_) {}
+        if (!info) return;
+        const prev = S.storeSnap;
+        S.storeSnap = info;
+        if (!S.storeSeen) { S.storeSeen = true; log("Stan gry DartCounter (IndexedDB): mecz " + info.id + ", sko\u0144czone legi " + info.legs + (info.vsCpu ? ", z DartBotem" : "")); }
+        if (prev && prev.id === info.id && info.legs > prev.legs) legEnded("leg", "stan gry DartCounter: legi " + prev.legs + " \u2192 " + info.legs + winnerText(info), info);
+      } finally { S.storeBusy = false; }
+    }
+    function winnerText(info) { return info && info.winner ? ", wygra\u0142 " + (info.winner.cpu ? "DartBot" : info.winner.name || "gracz") : ""; }
     // evaluated a moment later: our own checkout entry finishes (dialog answer) before we decide won / lost
-    function legEnded(kind, why) {
-      if (S.pendingEnd) { if (kind === "match") S.pendingEnd.kind = "match"; S.pendingEnd.why += ", " + why; return; }
+    function legEnded(kind, why, store) {
+      if (S.pendingEnd) { if (kind === "match") S.pendingEnd.kind = "match"; S.pendingEnd.why += ", " + why; if (store) S.pendingEnd.store = store; return; }
       if (now() - S.lastLegEndTs < 5000) { log("Diagnostyka: ten sam koniec lega (" + why + ")"); return; } // new leg + end screen of the same checkout
       log("Wykryto koniec " + (kind === "match" ? "meczu" : "lega") + " w DartCounter (" + why + ")");
-      S.pendingEnd = { kind, ts: now(), why };
+      S.pendingEnd = { kind, ts: now(), why, store: store || null };
       setTimeout(finishLegEnd, 1200);
     }
-    function finishLegEnd() {
+    async function finishLegEnd() {
       const p = S.pendingEnd;
       if (!p) return;
       if (S.busy && now() - p.ts < 10000) { setTimeout(finishLegEnd, 300); return; }
       S.pendingEnd = null;
       S.lastLegEndTs = now();
+      // who won: DartCounter's saved state (DartBot or a player) first; else our own last visit (checkout or not)
+      let store = p.store;
+      if (!store && /^\/game\/match\b/.test(location.pathname)) {
+        let info = null;
+        try { info = Core.dcLegInfo(await readDcStore()); } catch (_) {}
+        const prev = S.storeSnap;
+        if (info) { if (prev && prev.id === info.id && info.legs > prev.legs) store = info; S.storeSnap = info; }
+      }
       const solo = readRemaining().length === 1;
-      const won = !!(S.lastOwn && S.lastOwn.finish) || solo;
-      const whyWon = solo ? "jeden gracz" : S.lastOwn ? (S.lastOwn.finish ? "zako\u0144czy\u0142a Twoja tura " + S.lastOwn.labels : "Twoja ostatnia tura " + S.lastOwn.labels + " bez zako\u0144czenia") : "brak Twojej tury od ostatniego lega";
+      let won, whyWon;
+      if (store && store.winner && store.vsCpu) {
+        won = !store.winner.cpu;
+        whyWon = "stan gry DartCounter: wygra\u0142 " + (store.winner.cpu ? "DartBot" : store.winner.name || "gracz");
+      } else {
+        won = !!(S.lastOwn && S.lastOwn.finish) || solo;
+        whyWon = solo ? "jeden gracz" : S.lastOwn ? (S.lastOwn.finish ? "zako\u0144czy\u0142a Twoja tura " + S.lastOwn.labels : "Twoja ostatnia tura " + S.lastOwn.labels + " bez zako\u0144czenia") : "brak Twojej tury od ostatniego lega";
+      }
       S.lastOwn = null;
       const what = (p.kind === "match" ? "koniec meczu" : "koniec lega") + " (" + (won ? "wygrany" : "przegrany") + ")";
       log("DartCounter: " + what + " | " + whyWon + " | ustawienie: " + RESET_MODES[S.resetMode] + " | \u017ar\u00f3d\u0142o: " + S.source + " | aktywna karta: " + S.leader);
@@ -2604,30 +2972,56 @@
       if (!S.enabled || !S.leader) { log("ATC: wznowienie Autodarts pomini\u0119te (" + (!S.enabled ? "most wy\u0142\u0105czony" : "inna karta DartCounter jest aktywna") + ")"); return; }
       if (S.resetMode === "off") { log("ATC: wznowienie Autodarts wy\u0142\u0105czone (Reset Autodarts: " + RESET_MODES.off + "). Zacznij gr\u0119 w Autodarts r\u0119cznie."); return; }
       if (S.source !== "play") { log("ATC: wznowienie Autodarts dzia\u0142a tylko ze \u017ar\u00f3d\u0142em \u201egra Autodarts\u201d"); return; }
+      // 3.5.5: the game tab restarts Autodarts by itself; the order from here is only a backup for an older game tab
+      const an = await gget(K.autoNext, null);
+      if (an && an.kind === "atc" && an.ok && now() - an.ts < 30000) { log("ATC: karta gry ju\u017c sama zacz\u0119\u0142a gr\u0119 w Autodarts od nowa (" + an.how + ")"); return; }
       requestReset("atc", false, "ATC: Autodarts sko\u0144czy\u0142, DartCounter gra dalej");
     }
+    // Order to the game tab (shared userscript storage). The game tab answers at once ("received"), then with its steps
+    // (every Autodarts API answer with its HTTP code) and the result. No answer within 3 s: the same order again (3 tries).
     async function requestReset(kind, won, what) {
-      const cmd = { id: tabId + "-" + now().toString(36), ts: now(), kind, won };
-      S.reset = { id: cmd.id, ts: now(), state: "sent", how: "czekam na kart\u0119 gry", what, game: kind === "atc" ? "Around the Clock" : "X01" };
+      const cmd = { id: tabId + "-" + now().toString(36), ts: now(), kind, won, v: VERSION, attempt: 1 };
+      S.reset = { id: cmd.id, ts: now(), sentTs: now(), state: "sent", how: "czekam na kart\u0119 gry", what, game: kind === "atc" ? "Around the Clock" : "X01", cmd, steps: [] };
       await gset(K.resetCmd, cmd);
-      log("Reset Autodarts: polecenie " + cmd.id + " do karty gry (" + what + ")" + (playTabFresh() ? "" : " | UWAGA: karta gry nie daje znaku \u017cycia"));
+      const b = beatInfo(S.playHb, "gry");
+      log("Reset Autodarts: wys\u0142ano polecenie " + cmd.id + " do karty gry (" + what + ") | karta gry: " + b.text);
     }
     // answer of the game tab (read in the play loop)
     async function checkResetAck() {
       const r = S.reset;
       if (!r || r.state === "ok" || r.state === "fail") return;
       const ack = await gget(K.resetAck, null);
-      if (ack && ack.id === r.id && (ack.state !== r.state || ack.how !== r.how)) {
-        r.state = ack.state; r.how = ack.how; r.ackTs = now();
-        if (ack.state === "busy") log("Reset Autodarts: karta gry: " + ack.how);
-        if (ack.state === "ok") log("Reset Autodarts \u2713 " + ack.how);
-        if (ack.state === "fail") setErr("Reset Autodarts nie wyszed\u0142: " + ack.how + ". Zacznij w Autodarts now\u0105 gr\u0119 " + r.game + " r\u0119cznie (tury nie gin\u0105, wpisuj\u0105 si\u0119 dalej).", { reset: r.what });
+      if (ack && ack.id === r.id) {
+        const steps = Array.isArray(ack.steps) ? ack.steps : [];
+        const was = r.state;
+        if (was === "sent") log("Reset Autodarts: karta gry odebra\u0142a polecenie (" + (ack.v ? "wersja " + ack.v : "wersja sprzed 3.5.5") + ", po " + ((now() - r.ts) / 1000).toFixed(1) + " s)");
+        if (ack.state === "busy" && ack.how !== r.how) log("Reset Autodarts: karta gry: " + ack.how);
+        steps.forEach((x, i) => { if (r.steps[i] !== x) { r.steps[i] = x; r.ackTs = now(); log("Reset Autodarts: karta gry: API " + x); } });
+        if (ack.state !== was || ack.how !== r.how) {
+          r.state = ack.state; r.how = ack.how; r.ackTs = now();
+          if (ack.state === "ok") log("Reset Autodarts \u2713 " + ack.how);
+          if (ack.state === "fail") setErr("Reset Autodarts nie wyszed\u0142: " + ack.how + ". Zacznij w Autodarts now\u0105 gr\u0119 " + r.game + " r\u0119cznie (tury nie gin\u0105, wpisuj\u0105 si\u0119 dalej).", { reset: r.what, kroki: steps });
+          if ((ack.state === "ok" || ack.state === "fail") && Array.isArray(ack.extra) && ack.extra.length) {
+            const v = { labels: ack.extra.join(" ") };
+            missed(v, "lotki rzucone w Autodarts w trakcie resetu (Autodarts je cofn\u0105\u0142)");
+          }
+        }
         return;
       }
-      if (r.state === "sent" && now() - r.ts > 8000) {
-        r.state = "fail"; r.how = "karta gry nie odpowiada";
-        setErr("Reset Autodarts: karta gry nie odpowiada (otwarta? od\u015bwie\u017cona po aktualizacji skryptu?). Zacznij w Autodarts now\u0105 gr\u0119 " + r.game + " r\u0119cznie.", { reset: r.what });
-      } else if (r.state === "busy" && now() - (r.ackTs || r.ts) > 120000) {
+      if (r.state === "sent" && now() - r.sentTs > 3000) {
+        if (r.cmd.attempt < 3) {
+          r.cmd = Object.assign({}, r.cmd, { attempt: r.cmd.attempt + 1, ts: now() });
+          r.sentTs = now();
+          await gset(K.resetCmd, r.cmd);
+          log("Reset Autodarts: brak potwierdzenia od karty gry, wysy\u0142am polecenie jeszcze raz (pr\u00f3ba " + r.cmd.attempt + "/3) | karta gry: " + beatInfo(S.playHb, "gry").text);
+          return;
+        }
+        const b = beatInfo(S.playHb, "gry");
+        r.state = "fail"; r.how = "karta gry nie odpowiada (" + b.text + ")";
+        setErr("Reset Autodarts: karta gry nie odebra\u0142a polecenia po 3 pr\u00f3bach. " + (b.warn || (b.state === "ok"
+          ? "Karta gry \u017cyje, ale nie czyta polece\u0144: od\u015bwie\u017c j\u0105 (Cmd+R) i skopiuj log z obu kart."
+          : "Karta gry: " + b.text + ".")) + " Zacznij w Autodarts now\u0105 gr\u0119 " + r.game + " r\u0119cznie.", { reset: r.what, kartaGry: S.playHb });
+      } else if ((r.state === "busy" || r.state === "received") && now() - (r.ackTs || r.ts) > 120000) {
         r.state = "fail"; r.how = "brak wyniku po 2 min";
         setErr("Reset Autodarts: brak wyniku z karty gry. Sprawd\u017a Autodarts i w razie potrzeby zacznij now\u0105 gr\u0119 " + r.game + " r\u0119cznie.", { reset: r.what });
       }
@@ -2702,9 +3096,11 @@
 
     function playTabFresh() { return !!(S.playHb && now() - S.playHb.ts < 5000); }
     function playTabText() {
-      if (!playTabFresh()) return "BRAK (otw\u00f3rz gr\u0119 X01 na play.autodarts.com w drugiej karcie)";
+      const b = beatInfo(S.playHb, "gry");
+      if (b.state === "none") return "BRAK (otw\u00f3rz gr\u0119 X01 na play.autodarts.com w drugiej karcie)";
+      if (b.state !== "ok") return b.text;
       const h = S.playHb;
-      return h.frames ? "OK, stan meczu odbierany (" + h.path + ")" : "otwarta, ale bez stanu meczu: od\u015bwie\u017c kart\u0119 gry (" + h.path + ")";
+      return (h.frames ? "OK, stan meczu odbierany (" + h.path + ")" : "otwarta, ale bez stanu meczu: od\u015bwie\u017c kart\u0119 gry (" + h.path + ")") + ", wersja " + h.v;
     }
 
     // ----- panel -----
@@ -2766,9 +3162,13 @@
             ? "Klawiatura w DartCounter: " + kb + ". Zmie\u0144 j\u0105 na pole \u201eWpisz wynik\u201d albo klawiatur\u0119 z cyframi."
             : "");
       ui.set("err", old ? "Dzia\u0142a te\u017c stary skrypt AD2DC. Wy\u0142\u0105cz go w mened\u017cerze skrypt\u00f3w." : S.err);
+      const gb = S.source === "play" ? beatInfo(S.playHb, "gry") : { state: "ok", warn: "" };
+      if (gb.state !== S.playBeatState) { if (S.playBeatState !== undefined || gb.state !== "none") log("Karta gry: " + gb.text); S.playBeatState = gb.state; }
+      if (gb.warn && (gb.state === "old" || mp.ok)) ui.set("hint", gb.warn);
       let dot = "#22c55e", pill = "AD2DC " + VERSION + " \u2713";
       if (!S.enabled) { dot = "#9ca3af"; pill = "AD2DC " + VERSION + " wy\u0142."; }
       else if (S.err || S.missed.length || old || (S.source === "local" && S.apiErr && S.sourceName === "-")) { dot = "#ef4444"; pill = "AD2DC " + VERSION + (S.missed.length ? " niewpisane: " + S.missed.length : " b\u0142\u0105d"); }
+      else if (gb.state === "old") { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": od\u015bwie\u017c " + (gb.newer ? "t\u0119 kart\u0119" : "kart\u0119 gry"); }
       else if (S.source === "play" && !playTabFresh()) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz gr\u0119 Autodarts"; }
       else if (!mp.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": otw\u00f3rz mecz X01"; }
       else if (atcCfg && !atcCfg.ok) { dot = "#f59e0b"; pill = "AD2DC " + VERSION + ": ATC nieobs\u0142ugiwane"; }

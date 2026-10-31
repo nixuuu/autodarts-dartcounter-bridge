@@ -13,6 +13,7 @@ const path = require("node:path");
 const { JSDOM } = require("jsdom");
 
 const SCRIPT = fs.readFileSync(path.join(__dirname, "..", "autodarts-dartcounter-bridge.user.js"), "utf8");
+const VERSION = /@version\s+(\S+)/.exec(SCRIPT)[1];
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const seg = (n, m) => ({ segment: { name: (["M", "S", "D", "T"][m]) + n, number: n, multiplier: m, bed: m === 0 ? "Outside" : "Single" } });
 
@@ -115,7 +116,7 @@ function publish(store, id, throws) {
   const list = store.map.has("ad2dc3_play_visits") ? JSON.parse(store.map.get("ad2dc3_play_visits")) : [];
   list.push({ id, ts: Date.now(), reason: "następna tura", throws, labels: "" });
   store.map.set("ad2dc3_play_visits", JSON.stringify(list));
-  store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" }));
+  store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" }));
 }
 
 let failed = 0;
@@ -128,7 +129,7 @@ const last = g => g.turns[g.turns.length - 1];
     const store = makeStore();
     const p = makeDC(store, { autoSubmit });
     await sleep(1500);
-    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" })), 500);
+    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" })), 500);
 
     publish(store, "m1/0.0.1.0", [seg(20, 3), seg(20, 3), seg(9, 1)]); await sleep(4500);
     check(tag + ": T20 T20 S9 entered as 3 darts, one turn", p.g.turns.length === 1 && JSON.stringify(last(p.g).darts) === '["T20","T20","S9"]' && last(p.g).score === 129, p.g.turns);
@@ -162,7 +163,7 @@ const last = g => g.turns[g.turns.length - 1];
     const store = makeStore();
     const p = makeDC(store, { entry: "sum" });
     await sleep(1500);
-    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" })), 500);
+    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" })), 500);
     const sr = p.doc.getElementById("ad2dc-root").shadowRoot;
     sr.getElementById("pill").click(); await sleep(100); // open the panel: rows and error text are drawn only when open
     const turn = async (id, throws) => { const c0 = p.g.clicks.length; publish(store, id, throws); await sleep(4500); return p.g.clicks.slice(c0); };
@@ -186,7 +187,7 @@ const last = g => g.turns[g.turns.length - 1];
     check("T1 D2 S20 (small numbers are not confused with 10/12/20)", JSON.stringify(p.g.turns[4].darts) === '["T1","D2","S20"]' && JSON.stringify(clicks) === '["T","n1","D","n2","S","n20","submit"]', { t: p.g.turns[4], clicks });
 
     const panel = sr.getElementById("box").textContent + " " + sr.getElementById("pilltxt").textContent;
-    check("Polish panel text decoded from \\u escapes (e.g. \"Źródło\", \"Wpis\")", /Źródło/.test(panel) && /lotka po lotce/.test(panel) && /AD2DC 3\.5\.4/.test(panel), panel.slice(0, 200));
+    check("Polish panel text decoded from \\u escapes (e.g. \"Źródło\", \"Wpis\")", /Źródło/.test(panel) && /lotka po lotce/.test(panel) && panel.includes("AD2DC " + VERSION), panel.slice(0, 200));
     clearInterval(hb); p.w.close();
   }
 
@@ -196,7 +197,7 @@ const last = g => g.turns[g.turns.length - 1];
     const store = makeStore();
     const p = makeDC(store, { entry: "sum", keyboard: "dartboard", boardOnly: true });
     await sleep(1500);
-    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" })), 500);
+    const hb = setInterval(() => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" })), 500);
     const sr = p.doc.getElementById("ad2dc-root").shadowRoot;
     sr.getElementById("pill").click(); await sleep(100);
     publish(store, "m3/0.0.1.0", [seg(20, 1), seg(5, 1), seg(1, 1)]); await sleep(2500);
@@ -222,7 +223,7 @@ const last = g => g.turns[g.turns.length - 1];
     inp.addEventListener("input", e => { control = e.target.value.replace(/[^0-9]/g, ""); });
     inp.addEventListener("keydown", e => { if (e.key.toLowerCase() === "enter") { const v = Number(control); control = ""; inp.value = ""; dom.g.turns.push({ score: v, darts: [], why: "sum" }); dom.g.rest[0] -= v; dom.render(); } });
     await sleep(1500);
-    store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), frames: 1, path: "/matches/m1" }));
+    store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" }));
     publish(store, "m1/0.0.1.0", [seg(20, 3), seg(20, 3), seg(9, 1)]); await sleep(4500);
     check("darts mode without keyboard 'single' -> sum 129 entered once", dom.g.turns.length === 1 && dom.g.turns[0].score === 129 && dom.g.turns[0].why === "sum", dom.g.turns);
     dom.w.close();
