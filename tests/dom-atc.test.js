@@ -112,8 +112,8 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check(tag + ": panel shows the ATC page and the supported DartCounter settings", /Around the Clock/.test(sr.getElementById("rows").textContent) &&
       /bull: bullseye/.test(sr.getElementById("rows").textContent), sr.getElementById("rows").textContent.slice(0, 200));
 
-    publish(store, "a1/0.0.1.0", [seg(1, 1), seg(2, 2), seg(3, 3)], "ATC", ATC); await sleep(3500);
-    check(tag + ": S1 D2 T3 -> three hits on targets 1, 2, 3 (S, D, T keys), next target 4", JSON.stringify(p.g.turns[0]) === '["S1","D2","T3"]' && p.g.at === 3, p.g);
+    publish(store, "a1/0.0.1.0", [seg(1, 1), seg(2, 3), seg(3, 2)], "ATC", ATC); await sleep(3500);
+    check(tag + ": S1 T2 D3 -> three hits on targets 1, 2, 3 (S, T, D keys), next target 4", JSON.stringify(p.g.turns[0]) === '["S1","T2","D3"]' && p.g.at === 3, p.g);
     check(tag + ": submit only when the turn is not auto-submitted", p.g.clicks.filter(c => c === "submit").length === (autoSubmit ? 0 : 1), p.g.clicks);
 
     publish(store, "a1/0.0.2.0", [seg(4, 1), seg(9, 1), seg(7, 0)], "ATC", ATC); await sleep(3500);
