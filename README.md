@@ -1,10 +1,10 @@
 # AutoDarts → DartCounter Bridge
 
-Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled. Optional fun sounds for some darts (laugh, cheer, boo, combo).
+Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://autodarts.io) and enters each visit into [DartCounter](https://app.dartcounter.net) automatically — once per visit, after the darts are pulled. Optional fun sounds for some darts (laugh, cheer, boo, combo) and fireworks on a bull.
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.3.0**.
+Wersja: **3.4.0**.
 
 ## Instalacja
 
@@ -44,6 +44,18 @@ Sposób wpisu wynika z klawiatury wybranej w meczu DartCounter (ikona klawiatury
 
 Przycisk **Wpis** w panelu ustawia preferencję, ale klawiatura DartCounter ma pierwszeństwo: przy klawiaturze lotek skrypt zawsze wpisuje lotka po lotce, przy polu tekstowym lub klawiaturze z cyframi — sumę.
 
+## Fajerwerki przy bullu (od 3.4.0)
+
+Gdy lotka trafi w bulla, na ekranie DartCounter wybuchają fajerwerki:
+
+- **bullseye (50, D-Bull):** duże fajerwerki — 7 wybuchów u góry i po bokach ekranu,
+- **zewnętrzny bull (25):** mniejsze — 2 wybuchy w górnych rogach,
+- do tego krótki dźwięk fajerwerków (`fireworks-1.mp3`, przy 25 ciszej).
+
+Efekt to przezroczysta warstwa (canvas) nad stroną, z `pointer-events: none`: nie przechwytuje kliknięć, nie zasłania pola wyniku (wybuchy są w górnej części i przy bokach) i znika po ok. 2,6 s. Bez zewnętrznych bibliotek. Przy ustawieniu systemowym „ogranicz ruch” (`prefers-reduced-motion`) jest jeden mały wybuch.
+
+Włączanie i wyłączanie: **ten sam okrągły przycisk głośnika** obok kółka AD2DC włącza i wyłącza razem dźwięki i fajerwerki (domyślnie włączone, stan zapisany jak inne ustawienia). W rozwiniętym panelu przycisk **Test fajerwerków** pokazuje duże fajerwerki na próbę.
+
 ## Dźwięki lotek (od 3.3.0)
 
 Karta DartCounter gra krótki dźwięk przy niektórych lotkach:
@@ -62,7 +74,7 @@ Karta DartCounter gra krótki dźwięk przy niektórych lotkach:
 Jak włączyć:
 
 1. Obok kółka **AD2DC** (prawy dolny róg DartCounter) jest okrągły przycisk z **głośnikiem**. Jest widoczny też przy zwiniętym panelu.
-2. Jedno kliknięcie przełącza dźwięki: zielony głośnik = włączone (domyślnie), szary głośnik z krzyżykiem = wyciszone. Stan zapisuje się w pamięci skryptu (`GM_setValue`) i zostaje po odświeżeniu strony.
+2. Jedno kliknięcie przełącza dźwięki i efekty (fajerwerki): zielony głośnik = włączone (domyślnie), szary głośnik z krzyżykiem = wyłączone. Stan zapisuje się w pamięci skryptu (`GM_setValue`) i zostaje po odświeżeniu strony.
 3. Przeglądarka pozwala grać dźwięk dopiero po kliknięciu na stronie. Pierwsze kliknięcie w DartCounter (np. w głośnik albo **Test dźwięku** w panelu) odblokowuje audio. Do tego czasu nic nie gra i nie ma błędów w konsoli; wiersz „Dźwięki” w panelu pokazuje „zablokowane do pierwszego kliknięcia”.
 4. W rozwiniętym panelu: suwak **Głośność** (domyślnie 60%) i przycisk **Test dźwięku**.
 
@@ -72,7 +84,7 @@ Pliki leżą w `sounds/` w tym repo. Skrypt pobiera je raz (po odblokowaniu audi
 
 ### Licencje dźwięków
 
-Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Zmiany: przycięcie, wyciszenie na początku i końcu, normalizacja głośności (ffmpeg loudnorm), MP3 mono 44,1 kHz 96 kbit/s.
+Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Zmiany: przycięcie, wyciszenie na początku i końcu, normalizacja głośności (ffmpeg), MP3 mono 44,1 kHz 96 kbit/s.
 
 | Plik | Źródło | Autor | Licencja |
 |---|---|---|---|
@@ -80,6 +92,7 @@ Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Z
 | `sounds/cheer-2.mp3` | [277021 sandermotions applause-2.wav](https://commons.wikimedia.org/wiki/File:277021_sandermotions_applause-2.wav) (Wikimedia Commons, import z Freesound #277021) | Sandermotions | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 | `sounds/boo-3.mp3` | [Red_Library_Crowds_Men](https://archive.org/details/Red_Library_Crowds_Men), plik „R08-34-Men Booing” (Internet Archive) | USC Cinema / Sunset Editorial Collection | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 | `sounds/combo-6.mp3` | [Bicycle Horn](https://opengameart.org/content/bicycle-horn), plik „bicycle-horn-1.wav” (OpenGameArt) | antumdeluge | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `sounds/fireworks-1.mp3` | [Fire crackers - New Year 2023 - 2022-12-31T23-53-56.ogg](https://commons.wikimedia.org/wiki/File:Fire_crackers_-_New_Year_2023_-_2022-12-31T23-53-56.ogg) (Wikimedia Commons), fragment 72,15–74,85 s | Almanta | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
 ## Mecz w DartCounter
 
@@ -91,7 +104,7 @@ Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Z
 
 Małe kółko w prawym dolnym rogu (kliknij, żeby rozwinąć). Kolor kropki: zielony = działa, żółty = otwórz mecz / grę, czerwony = błąd, szary = most wyłączony.
 
-Obok kółka: przycisk głośnika (dźwięki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test dźwięku, suwak Głośność, Opóźnienie, Zwiń. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
+Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test fajerwerków, Test dźwięku, suwak Głośność, Opóźnienie, Zwiń. „Kopiuj log” i „Kopiuj surowy stan” służą do zgłaszania błędów.
 
 ## Zasady wpisu
 
@@ -122,7 +135,7 @@ npm install
 npm test
 ```
 
-Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo) oraz symulacje stron (jsdom): DartCounter (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, przycisk głośnika) i karta gry Autodarts.
+Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50) oraz symulacje stron (jsdom): DartCounter (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika) i karta gry Autodarts.
 
 ## Licencja
 

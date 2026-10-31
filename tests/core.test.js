@@ -341,6 +341,41 @@ test("sounds: undo of S1 cancels its waiting laugh; local board empty ends the t
   assert.deepEqual(sounds([["local", []], ["local", ["S5", "S20", "S1"]], ["local", []], ["local", ["T20"]]]), ["combo", "cheer"]);
 });
 
+// ---------- bull fireworks (3.4.0) ----------
+test("bullKind: bullseye 50 -> big, outer bull 25 -> small, everything else none", () => {
+  const bk = x => Core.bullKind(Core.normalizeThrow(x));
+  assert.equal(bk("BULL"), "big"); assert.equal(bk("D25"), "big"); assert.equal(bk("DB"), "big"); assert.equal(bk("50"), "big");
+  assert.equal(bk("25"), "small"); assert.equal(bk("S25"), "small"); assert.equal(bk("SB"), "small");
+  assert.equal(bk(newT("Bull", 25, 2, "Double")), "big");                    // new /api/state format
+  assert.equal(bk(newT("25", 25, 1, "Single")), "small");
+  assert.equal(bk(oldT("Bull", 25, "Double", 2)), "big");                    // old /api/state format
+  assert.equal(bk(oldT("25", 25, "Single", 1)), "small");
+  assert.equal(bk(seg("Bull", 50, 1, "Bull")), "big");                       // match state may say 50
+  assert.equal(bk(seg("25", 25, 1, "Single")), "small");
+  for (const x of ["S20", "T20", "D20", "S5", "M25", "Miss", "T19"]) assert.equal(bk(x), null, x);
+  assert.equal(Core.bullKind(Core.normalizeThrow({ foo: 1 })), null);
+  assert.equal(Core.bullKind(null), null);
+});
+
+function bulls(steps) {
+  const out = [];
+  const nd = Core.createNewDarts(d => { const k = Core.bullKind(d); if (k) out.push(k); });
+  for (const [key, labels] of steps) nd.update(key, labels.map(l => Core.normalizeThrow(l)));
+  return out;
+}
+test("fireworks once per new bull: big for 50, small for 25, repeats and the start state stay quiet", () => {
+  assert.deepEqual(bulls([["t1", ["BULL"]], ["t1", ["BULL"]]]), []);                                  // already there at start
+  assert.deepEqual(bulls([["t1", []], ["t1", ["BULL"]], ["t1", ["BULL"]], ["t1", ["BULL", "25"]], ["t1", ["BULL", "25"]]]), ["big", "small"]);
+  assert.deepEqual(bulls([["t1", []], ["t1", ["T20", "S1", "D16"]]]), []);
+  assert.deepEqual(bulls([["t1", []], ["t1", ["25", "BULL", "BULL"]]]), ["small", "big", "big"]);    // three new in one update
+});
+test("fireworks: next turn and undo", () => {
+  assert.deepEqual(bulls([["t1", []], ["t1", ["BULL"]], ["t2", ["BULL"]]]), ["big", "big"]);         // new turn, new bull
+  assert.deepEqual(bulls([["t1", []], ["t1", ["BULL"]], ["t1", []], ["t1", ["25"]]]), ["big", "small"]); // undo, thrown again
+  assert.deepEqual(bulls([["t1", []], ["t1", ["S5"]], ["t1", ["BULL"]]]), []);                          // correction at the same place
+  assert.deepEqual(bulls([["local", []], ["local", ["S1", "S1", "S1"]], ["local", []], ["local", ["BULL"]]]), ["big"]);
+});
+
 const D = (lbl) => Core.normalizeThrow(lbl);
 test("decideScore: normal, unknown remaining", () => {
   assert.equal(Core.decideScore([D("T20"), D("T20"), D("T20")], null, false, true).score, 180);

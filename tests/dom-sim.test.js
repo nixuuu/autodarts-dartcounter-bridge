@@ -85,12 +85,17 @@ function makePage(keyboard, opts) {
   w.GM_info = { scriptHandler: "FakeMonkey", version: "1" };
   // fake WebAudio (3.3.0 dart sounds): which file played, how often a sound was cut, starts "suspended" like a browser
   const audio = { created: 0, plays: [], stops: 0, volumes: [], fetched: [] };
-  const SOUND_SIZE = { "laugh-2.mp3": 1, "cheer-2.mp3": 2, "boo-3.mp3": 3, "combo-6.mp3": 4 };
-  const SOUND_NAME = { 1: "laugh", 2: "cheer", 3: "boo", 4: "combo" };
+  const SOUND_SIZE = { "laugh-2.mp3": 1, "cheer-2.mp3": 2, "boo-3.mp3": 3, "combo-6.mp3": 4, "fireworks-1.mp3": 5 };
+  const SOUND_NAME = { 1: "laugh", 2: "cheer", 3: "boo", 4: "combo", 5: "fireworks" };
   w.GM_xmlhttpRequest = d => {
     const m = /\/sounds\/([\w-]+\.mp3)$/.exec(d.url);
     if (m) { audio.fetched.push(d.url); setTimeout(() => d.onload({ status: 200, response: new ArrayBuffer(SOUND_SIZE[m[1]] || 9) }), 5); return; }
     api.calls++; setTimeout(() => d.onload({ status: 200, responseText: JSON.stringify(api.state) }), 5);
+  };
+  // canvas 2D stub (jsdom has no canvas): counts drawn particles of the bull fireworks
+  audio.fwDraws = 0;
+  w.HTMLCanvasElement.prototype.getContext = function () {
+    return { setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() { audio.fwDraws++; }, globalAlpha: 1, fillStyle: "" };
   };
   if (opts.audio) {
     w.AudioContext = class {
@@ -220,7 +225,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check(tag + ": no audio context before a user click", dc.audio.created === 0, dc.audio);
     send(1, []); await sleep(400);
     sr0.querySelector('#btns [data-id="soundtest"]').click(); await sleep(1300); // user click on "Test dźwięku"
-    check(tag + ": test button unlocks audio, loads 4 files from raw main, plays cheer", dc.audio.created === 1 && dc.audio.fetched.length === 4 &&
+    check(tag + ": test button unlocks audio, loads 5 files from raw main, plays cheer", dc.audio.created === 1 && dc.audio.fetched.length === 5 &&
       dc.audio.fetched.every(u => u.startsWith("https://raw.githubusercontent.com/nixuuu/autodarts-dartcounter-bridge/main/sounds/")) && JSON.stringify(dc.audio.plays) === '["cheer"]', dc.audio);
     const vol = sr0.querySelector('#sliders input[type="range"]');
     vol.value = "40"; vol.dispatchEvent(new dc.w.Event("input", { bubbles: true })); await sleep(500);
@@ -252,12 +257,29 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     send(5, []); await sleep(4500);
     check(tag + ": combo S5 S1 S20 -> combo only (no laugh)", JSON.stringify(dc.audio.plays.slice(6)) === '["combo"]', dc.audio.plays);
     check(tag + ": combo turn entered once (26), entries unchanged", JSON.stringify(dc.game.submitted) === "[79,60,0,26]", dc.game);
-    sr0.getElementById("snd").click(); await sleep(200); // one click on the speaker: sounds off
+    // bull fireworks (3.4.0): bullseye -> big overlay + fireworks sound, outer bull -> small; no clicks blocked; gone in ~3 s
+    const fwEl = () => dc.doc.getElementById("ad2dc-fireworks");
+    send(5, [seg(25, 2)]); await sleep(800);
+    const fw = fwEl();
+    check(tag + ": bullseye -> big fireworks overlay that never blocks clicks", !!fw && fw.dataset.size === "big" && fw.style.pointerEvents === "none" &&
+      fw.style.position === "fixed" && Number(fw.dataset.bursts) >= 5, fw && { size: fw.dataset.size, pe: fw.style.pointerEvents, bursts: fw.dataset.bursts });
+    check(tag + ": bullseye -> fireworks sound", dc.audio.plays[dc.audio.plays.length - 1] === "fireworks" && dc.audio.plays.length === 8, dc.audio.plays);
+    await sleep(3600);
+    check(tag + ": fireworks drawn, then removed after ~3 s", !fwEl() && dc.audio.fwDraws > 50, { left: !!fwEl(), draws: dc.audio.fwDraws });
+    send(5, [seg(25, 2), seg(25, 1)]); await sleep(800);
+    check(tag + ": outer bull 25 -> small fireworks + sound", !!fwEl() && fwEl().dataset.size === "small" && Number(fwEl().dataset.bursts) === 2 &&
+      dc.audio.plays.length === 9 && dc.audio.plays[8] === "fireworks", { size: fwEl() && fwEl().dataset.size, plays: dc.audio.plays });
+    send(6, []); await sleep(4500);
+    check(tag + ": bull turn entered once (75), entries unchanged", JSON.stringify(dc.game.submitted) === "[79,60,0,26,75]", dc.game);
+    check(tag + ": no fireworks for other darts", dc.audio.plays.filter(x => x === "fireworks").length === 2, dc.audio.plays);
+    sr0.getElementById("snd").click(); await sleep(200); // one click on the speaker: sounds and effects off
     check(tag + ": speaker click -> off icon, saved with GM_setValue", sr0.getElementById("snd").dataset.on === "0" &&
       sr0.getElementById("snd").classList.contains("off") && dc.store.map.get("ad2dc3_sounds") === "false", dc.store.map.get("ad2dc3_sounds"));
-    send(5, [seg(2, 0)]); await sleep(400); send(5, [seg(2, 0), seg(20, 3)]); await sleep(1500);
-    check(tag + ": sounds off -> miss and T20 silent", dc.audio.plays.length === 7, dc.audio);
-    check(tag + ": pill shows version", /3\.3\.0/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
+    check(tag + ": speaker title talks about sounds and effects", /D\u017awi\u0119ki i efekty: WY\u0141/.test(sr0.getElementById("snd").title) &&
+      sr0.getElementById("snd").getAttribute("aria-label") === sr0.getElementById("snd").title, sr0.getElementById("snd").title);
+    send(6, [seg(2, 0)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3)]); await sleep(400); send(6, [seg(2, 0), seg(20, 3), seg(25, 2)]); await sleep(1500);
+    check(tag + ": speaker off -> miss, T20 and bullseye silent, no fireworks", dc.audio.plays.length === 9 && !fwEl(), { plays: dc.audio.plays, fw: !!fwEl() });
+    check(tag + ": pill shows version", /3\.4\.0/.test(sr0.getElementById("pilltxt").textContent), sr0.getElementById("pilltxt").textContent);
     // page reload: a new DartCounter tab with the same userscript storage keeps the muted state
     dc.w.close(); await sleep(300);
     const dc2 = makePage("none", { store, source: "play", audio: true });

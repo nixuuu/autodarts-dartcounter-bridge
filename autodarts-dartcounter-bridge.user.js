@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.3.0
+// @version      3.4.0
 // @description  Reads AutoDarts visits (X01 game on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,11 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.3.0
+ * AD2DC 3.4.0
+ *
+ * Bull fireworks (3.4.0): a canvas overlay (pointer-events: none, upper part of the screen, fades out in ~2.6 s)
+ *   with big fireworks for the bullseye (50) and smaller ones for the outer bull (25), plus a short fireworks
+ *   sound (public domain, see README). The round speaker button switches sounds and fireworks together.
  *
  * Dart sounds (3.3.0): S1/D1/T1 -> laugh, T20 -> cheer, miss (outside the board) -> boo,
  *   a turn of exactly S1 + S5 + S20 (any order) -> combo sound at the end of the turn instead of the S1 laugh.
@@ -79,7 +83,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.3.0";
+  const VERSION = "3.4.0";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -413,6 +417,27 @@
       };
     }
 
+    // ----- bull fireworks -----
+    // "big" for the bullseye (50), "small" for the outer bull (25), else null.
+    function bullKind(d) {
+      if (!d || d.ok === false || d.number !== 25) return null;
+      return d.multiplier === 2 ? "big" : d.multiplier === 1 ? "small" : null;
+    }
+    // Reports every dart that is NEW since the previous call (same rules as the sounds:
+    // first call = baseline, new key = new turn, fewer darts = undo/empty board lowers the baseline).
+    function createNewDarts(onDart) {
+      let prev = null;
+      return {
+        update(key, darts) {
+          darts = (darts || []).filter(Boolean);
+          if (!prev) { prev = { key, n: darts.length }; return; }
+          const from = key !== prev.key ? 0 : Math.min(prev.n, darts.length);
+          for (let i = from; i < darts.length; i++) onDart(darts[i], i);
+          prev = { key, n: darts.length };
+        }
+      };
+    }
+
     // Score to enter for a visit.
     // remaining: current player's rest (or null). reliable: true when we are sure it is the current player.
     function decideScore(darts, remaining, reliable, doubleOut) {
@@ -432,7 +457,7 @@
     }
 
     return { toNum, parseLabel, normalizeThrow, normalizeState, isPulling, createTracker, decideScore, keyOf, applyOverrides, parseMatch, createMatchTracker,
-      dartSound, comboPossible, isCombo, createSoundRules };
+      dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -544,7 +569,7 @@
 
   // ---------- Dart sounds: WebAudio player (unlocked by the first real click / key press) ----------
   const SOUND_BASE = "https://raw.githubusercontent.com/nixuuu/autodarts-dartcounter-bridge/main/sounds/";
-  const SOUND_FILES = { laugh: "laugh-2.mp3", cheer: "cheer-2.mp3", boo: "boo-3.mp3", combo: "combo-6.mp3" };
+  const SOUND_FILES = { laugh: "laugh-2.mp3", cheer: "cheer-2.mp3", boo: "boo-3.mp3", combo: "combo-6.mp3", fireworks: "fireworks-1.mp3" };
   const Sound = (() => {
     let ctx = null, loading = null, current = null, state = "zablokowany do pierwszego klikni\u0119cia";
     const buffers = {};
@@ -580,7 +605,7 @@
           catch (e) { log("D\u017awi\u0119k " + SOUND_FILES[name] + " nie wczytany: " + errText(e)); }
         }
         const n = Object.keys(buffers).length;
-        state = n ? "gotowe (" + n + "/4)" : "brak d\u017awi\u0119k\u00f3w (b\u0142\u0105d pobierania)";
+        state = n ? "gotowe (" + n + "/" + Object.keys(SOUND_FILES).length + ")" : "brak d\u017awi\u0119k\u00f3w (b\u0142\u0105d pobierania)";
         ui.render();
       })();
       return loading;
@@ -616,6 +641,83 @@
       get state() { return ctx && ctx.state === "suspended" ? "zablokowane do pierwszego klikni\u0119cia" : state; },
       get ready() { return !!(ctx && ctx.state === "running" && Object.keys(buffers).length); }
     };
+  })();
+
+  // ---------- Bull fireworks: light canvas overlay, never blocks clicks ----------
+  const Fireworks = (() => {
+    const LIFE_MS = 2600;
+    let canvas = null, ctx = null, parts = [], timers = [], running = false, until = 0, w = 0, h = 0, dpr = 1;
+    const raf = cb => (typeof requestAnimationFrame === "function" ? requestAnimationFrame(cb) : setTimeout(() => cb(now()), 16));
+    function reducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); } catch (_) { return false; }
+    }
+    function ensure() {
+      if (canvas && canvas.isConnected) return;
+      canvas = document.createElement("canvas");
+      canvas.id = "ad2dc-fireworks";
+      canvas.setAttribute("aria-hidden", "true");
+      Object.assign(canvas.style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh",
+        pointerEvents: "none", zIndex: "2147483646", opacity: "0.85", background: "transparent" });
+      document.documentElement.appendChild(canvas);
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      w = window.innerWidth || 800; h = window.innerHeight || 600;
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      try { ctx = canvas.getContext ? canvas.getContext("2d") : null; } catch (_) { ctx = null; }
+      if (ctx && ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function remove() {
+      running = false; parts = [];
+      for (const t of timers) clearTimeout(t);
+      timers = [];
+      if (canvas) canvas.remove();
+      canvas = null; ctx = null;
+    }
+    function explode(x, y, count, speed) {
+      const hue = Math.floor(Math.random() * 360);
+      for (let i = 0; i < count; i++) {
+        const a = (Math.PI * 2 * i) / count + Math.random() * 0.2, v = speed * (0.55 + Math.random() * 0.45);
+        parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, decay: 0.012 + Math.random() * 0.01,
+          size: 1.5 + Math.random() * 1.8, color: "hsl(" + ((hue + Math.random() * 40) % 360) + ",100%,62%)" });
+      }
+    }
+    function frame() {
+      if (!running) return;
+      if (ctx) {
+        ctx.clearRect(0, 0, w, h);
+        for (const p of parts) {
+          p.vy += 0.045; p.vx *= 0.985; p.vy *= 0.985; p.x += p.vx; p.y += p.vy; p.life -= p.decay;
+          if (p.life <= 0) continue;
+          ctx.globalAlpha = Math.max(0, p.life);
+          ctx.fillStyle = p.color;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+      parts = parts.filter(p => p.life > 0);
+      if (now() >= until) { remove(); return; }
+      raf(frame);
+    }
+    // kind "big" (bullseye 50) or "small" (outer bull 25). Bursts sit in the upper part and at the sides.
+    function burst(kind) {
+      try {
+        if (!document.documentElement) return false;
+        ensure();
+        const big = kind === "big", calm = reducedMotion();
+        const spots = calm ? [[0.5, 0.15]] : big
+          ? [[0.12, 0.18], [0.3, 0.1], [0.5, 0.16], [0.7, 0.1], [0.88, 0.18], [0.2, 0.32], [0.8, 0.32]]
+          : [[0.15, 0.15], [0.85, 0.15]];
+        const count = calm ? 30 : big ? 70 : 40, speed = big ? 4.2 : 3;
+        spots.forEach(([fx, fy], i) => {
+          timers.push(setTimeout(() => explode(fx * w, fy * h, count, speed), calm ? 0 : i * (big ? 140 : 220)));
+        });
+        canvas.dataset.size = big ? "big" : "small";
+        canvas.dataset.bursts = String((Number(canvas.dataset.bursts) || 0) + spots.length);
+        until = now() + LIFE_MS + (calm ? 0 : spots.length * (big ? 140 : 220));
+        if (!running) { running = true; raf(frame); }
+        return true;
+      } catch (_) { return false; }
+    }
+    return { burst, remove, get active() { return !!(canvas && canvas.isConnected); } };
   })();
 
   // ---------- Clipboard ----------
@@ -1039,6 +1141,19 @@
 
     const tracker = Core.createTracker(onVisit, msg => log(msg));
     // dart sounds: beside the bridge, never touches the queue or the entry
+    // bull fireworks + short fireworks sound; on/off with the speaker button (sounds and effects together)
+    function bullFireworks(kind, label, force) {
+      if (!S.sounds && !force) return;
+      setTimeout(() => {
+        Fireworks.burst(kind);
+        const ok = S.sounds && Sound.play("fireworks", (S.soundVolume / 100) * (kind === "big" ? 1 : 0.7));
+        log("Fajerwerki: " + label + " (" + (kind === "big" ? "du\u017ce" : "ma\u0142e") + ")" + (S.sounds ? (ok ? ", z d\u017awi\u0119kiem" : ", d\u017awi\u0119k: " + Sound.state) : ""));
+      }, 0);
+    }
+    const bullDarts = Core.createNewDarts(d => {
+      const kind = Core.bullKind(d);
+      if (kind && S.leader) bullFireworks(kind, d.label);
+    });
     const soundRules = Core.createSoundRules((name, why) => {
       if (!S.sounds || !S.leader) return;
       setTimeout(() => {
@@ -1080,16 +1195,20 @@
     });
     // speaker button next to the AD2DC pill: one click = sounds on/off, saved with GM_setValue; the click also unlocks audio
     function soundQuick() {
-      return { on: S.sounds, title: S.sounds ? "D\u017awi\u0119ki lotek: W\u0141 (kliknij, \u017ceby wyciszy\u0107)" : "D\u017awi\u0119ki lotek: WY\u0141 (kliknij, \u017ceby w\u0142\u0105czy\u0107)" };
+      return { on: S.sounds, title: S.sounds ? "D\u017awi\u0119ki i efekty: W\u0141 (kliknij, \u017ceby wy\u0142\u0105czy\u0107)" : "D\u017awi\u0119ki i efekty: WY\u0141 (kliknij, \u017ceby w\u0142\u0105czy\u0107)" };
     }
     async function toggleSounds() {
       S.sounds = !S.sounds;
       Sound.unlock(); // real click: allowed to start audio
-      if (!S.sounds) Sound.stop();
+      if (!S.sounds) { Sound.stop(); Fireworks.remove(); }
       ui.setQuick(soundQuick());
       await gset(K.sounds, S.sounds);
-      log("D\u017awi\u0119ki lotek: " + (S.sounds ? "W\u0141\u0104CZONE" : "WY\u0141\u0104CZONE"));
+      log("D\u017awi\u0119ki i efekty (fajerwerki): " + (S.sounds ? "W\u0141\u0104CZONE" : "WY\u0141\u0104CZONE"));
     }
+    ui.addButton("fwtest", "Test fajerwerk\u00f3w", () => {
+      Sound.unlock();
+      setTimeout(() => bullFireworks("big", "test", true), Sound.ready ? 0 : 800);
+    });
     ui.addButton("soundtest", "Test d\u017awi\u0119ku", () => {
       Sound.unlock();
       setTimeout(() => { if (!Sound.play("cheer", S.soundVolume / 100)) log("Test d\u017awi\u0119ku: " + Sound.state); }, Sound.ready ? 0 : 800);
@@ -1311,6 +1430,7 @@
       S.snap = st;
       tracker.update(st, now());
       soundRules.update("local", st.darts, true);
+      bullDarts.update("local", st.darts);
       renderStrip();
     }
 
@@ -1330,8 +1450,10 @@
         S.playLive = await gget(K.playLive, null);
         if (S.source === "play" && S.playLive && S.playLive.ts !== S.playLiveSeenTs) {
           S.playLiveSeenTs = S.playLive.ts;
-          soundRules.update("gra:" + S.playLive.matchId + "/" + S.playLive.key,
-            (S.playLive.throws || []).map(t => Core.normalizeThrow(t)).filter(Boolean));
+          const liveKey = "gra:" + S.playLive.matchId + "/" + S.playLive.key;
+          const liveDarts = (S.playLive.throws || []).map(t => Core.normalizeThrow(t)).filter(Boolean);
+          soundRules.update(liveKey, liveDarts);
+          bullDarts.update(liveKey, liveDarts);
         }
         const list = (await gget(K.playVisits, [])) || [];
         for (const item of list) {
@@ -1693,7 +1815,7 @@
         ["Ostatnia tura", S.lastVisit ? S.lastVisit.labels + " = " + S.lastVisit.total + " (" + hhmmss(S.lastVisit.ts) + ")" : "-"],
         ["Pole wyniku", t ? "znalezione: " + t.how : "BRAK" + (mp.ok ? " (czekam na Twoj\u0105 kolej)" : "")],
         ["Ostatni wpis", S.lastEntry ? S.lastEntry.score + (S.lastEntry.ok ? " \u2713 " : " \u2717 ") + hhmmss(S.lastEntry.ts) + " (" + S.lastEntry.how + ")" : "-"],
-        ["D\u017awi\u0119ki", S.sounds ? "W\u0141, " + S.soundVolume + "%, " + Sound.state : "WY\u0141"],
+        ["D\u017awi\u0119ki i efekty", S.sounds ? "W\u0141, " + S.soundVolume + "%, " + Sound.state + ", fajerwerki przy bullu" : "WY\u0141"],
         ["Wpis", t && t.mode === "darts" ? "lotka po lotce (klawiatura lotek w DartCounter)"
           : t && t.mode === "unsupported" ? "BRAK: " + t.how
           : S.entryMode === "darts" ? "lotka po lotce, ale klawiatura DC: " + keyboardSetting() + " (wpis sumy)" : "suma tury"],
@@ -1728,7 +1850,7 @@
         "mened\u017cer: " + managerName() + " | GM_*: " + hasGM_ + " | GM.*: " + hasGMdot,
         "przegl\u0105darka: " + navigator.userAgent,
         "adres: " + location.href,
-        "most: " + (S.enabled ? "ON" : "OFF") + " | aktywna karta: " + S.leader + " | double out: " + S.doubleOut + " | wpis: " + S.entryMode + " | d\u017awi\u0119ki: " + (S.sounds ? S.soundVolume + "% " + Sound.state : "wy\u0142."),
+        "most: " + (S.enabled ? "ON" : "OFF") + " | aktywna karta: " + S.leader + " | double out: " + S.doubleOut + " | wpis: " + S.entryMode + " | d\u017awi\u0119ki: " + (S.sounds ? S.soundVolume + "% " + Sound.state : "wy\u0142.") + " (z fajerwerkami)",
         "API: " + S.apiBase + " | ok: " + (S.apiOk ? hhmmss(S.apiOk) : "nigdy") + " | b\u0142\u0105d: " + (S.apiErr || "-"),
         "\u017ar\u00f3d\u0142o: " + S.source + " | lokalnie: " + S.sourceName + " | karta gry: " + playTabText() + " | listener: " + S.listener,
         "gra teraz: " + safeJson(S.playLive),
