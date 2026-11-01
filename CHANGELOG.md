@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.5.6
+
+- Fix (Around the Clock): the outer bull (25) on the bull target now becomes a miss in Autodarts, so Autodarts plays on to the bull like DartCounter ("Finish by hitting the bullseye").
+  - Real cause: since 3.5.3 the throw correction was sent with type `Normal`. The Autodarts app only knows lower-case types such as `normal` and `bouncer`, so the correction never applied.
+  - Step 1: the correction in the app's own format, the 25 as a bouncer (`PATCH throws` with `{ type: "bouncer" }`, like the app's "Bouncer" button: Miss, 0 points).
+  - Step 2: if Autodarts refuses it or still ends the game: the app's Undo on the 25. DartCounter gets a Miss in its place, Autodarts plays on.
+  - Step 3: neither works: the 3.5.5 fallback (DartCounter takes 25 as Miss, the game tab starts the next Autodarts game).
+  - The log says which step worked ("krok 1/2/3 z 3"), in both tabs. Only while DartCounter plays Around the Clock with the bridge on.
+- New (X01): board Reset after every leg, won or lost (button "Reset tarczy po legu", on by default), the same Reset as in Autodarts Desktop or key R in the game.
+  - After a leg the board can stay in takeout (yellow outline in Autodarts Desktop) and stop counting.
+  - After the Autodarts reset of the leg, the script waits up to 6 s for the darts to come out. Then it resets the board when it is ready or still in takeout, never while darts of a turn are on it.
+  - Local Board Manager first (`POST http://127.0.0.1:3180/api/reset`, the "Adres API" address), the cloud board service as fallback (game tab, the app's login). Never a calibration.
+  - Board state before and after the Reset in the log; result in the panel row "Reset tarczy".
+- Fix: the first result from the game tab after opening DartCounter (next leg, Around the Clock restart) is now shown in the log as well.
+- X01 entry unchanged.
+
 ## 3.5.5
 
 - Fix (X01): Autodarts did not start again after a lost DartCounter leg.

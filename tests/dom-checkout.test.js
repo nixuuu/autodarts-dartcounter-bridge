@@ -188,6 +188,7 @@ function makeDC(store, opts) {
   if (!store.map.has("ad2dc3_source")) w.GM_setValue("ad2dc3_source", "play");
   w.GM_setValue("ad2dc3_entry_mode", opts.mode === "darts" ? "darts" : "sum");
   if (opts.resetMode) w.GM_setValue("ad2dc3_reset_mode", opts.resetMode);
+  if (opts.boardReset === false) w.GM_setValue("ad2dc3_board_reset", false);
   w.GM_info = { scriptHandler: "FakeMonkey", version: "1" };
   w.GM_xmlhttpRequest = d => setTimeout(() => d.onerror({ error: "test: brak API" }), 5);
   w.console.log = (...a) => { g.logs.push(a.join(" ")); };
@@ -210,7 +211,12 @@ function publish(store, labels) {
 }
 const VERSION = /@version\s+(\S+)/.exec(SCRIPT)[1];
 function heartbeat(store) {
-  const beat = () => store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" }));
+  const beat = () => {
+    store.map.set("ad2dc3_play_hb", JSON.stringify({ ts: Date.now(), v: VERSION, frames: 1, path: "/matches/m1" }));
+    // a game tab of this version answers a board Reset order at once ("received"); the result comes from the test
+    const bc = store.get("ad2dc3_board_cmd"), ba = store.get("ad2dc3_board_ack");
+    if (bc && (!ba || ba.id !== bc.id)) store.map.set("ad2dc3_board_ack", JSON.stringify({ id: bc.id, ts: Date.now(), state: "received", how: "karta gry odebra\u0142a polecenie", v: VERSION }));
+  };
   beat();
   return setInterval(beat, 400);
 }
@@ -301,12 +307,25 @@ async function scenario(mode, rest, visits, opts) {
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
     check("lost leg (DartBot checkout) -> reset order, won = false", cmd && cmd.kind === "leg" && cmd.won === false, cmd);
+    // 3.5.6: board Reset after the leg (default on), done by the game tab: it answers at once
+    const bc = s.store.get("ad2dc3_board_cmd");
+    check("lost leg -> board Reset order for the game tab (with the Board Manager address)", bc && /przegrany/.test(bc.what) && bc.base === "http://127.0.0.1:3180" && bc.v === VERSION, bc);
+    if (bc) s.store.set("ad2dc3_board_ack", { id: bc.id, ts: Date.now(), state: "ok", how: "lokalnie: POST 127.0.0.1:3180/api/reset \u2192 HTTP 200", v: VERSION });
     // game tab answers: ok
     s.store.set("ad2dc3_reset_ack", { id: cmd.id, ts: Date.now(), state: "ok", how: "leg od nowa (games/restart)" });
     await sleep(1200);
     s.p.openPanel();
     await sleep(700);
     check("reset ack ok -> panel row with the result", /Reset Autodarts.*✓ leg od nowa/.test(s.p.panel().rows), s.p.panel().rows);
+    check("board ack ok -> panel row 'Reset tarczy' with the result", /Reset tarczy.*po ka\u017cdym legu X01.*\u2713 karta gry: lokalnie: POST 127\.0\.0\.1:3180\/api\/reset/.test(s.p.panel().rows), s.p.panel().rows);
+    s.stop();
+  }
+  // board Reset switched off -> no order
+  {
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, boardReset: false });
+    await sleep(2500);
+    check("board Reset off -> leg end gives no board order (reset order of Autodarts still sent)", !s.store.get("ad2dc3_board_cmd") && !!s.store.get("ad2dc3_reset_cmd"),
+      { board: s.store.get("ad2dc3_board_cmd"), reset: s.store.get("ad2dc3_reset_cmd") });
     s.stop();
   }
 

@@ -3,8 +3,10 @@
 // proxy, GM_* values shared between the tabs). Two tabs per scenario: DartCounter and the Autodarts game tab.
 // 1) X01, lost leg: the DartBot wins the DartCounter leg -> leg end seen (rests, legs counter, IndexedDB) -> order to
 //    the game tab -> "received" answer -> the app's Undo back to the leg start -> next visit still goes to DartCounter.
-// 2) Around the Clock, 25 on the bull: Autodarts ends its game, DartCounter takes 25 as Miss, the game tab starts the
-//    next Autodarts game by itself (games/next), 50 ends DartCounter's game. No click in DartCounter.
+//    3.5.6: then the board Reset: the Board Manager (127.0.0.1:3180) is stuck in takeout -> Reset after the grace time.
+// 2) Around the Clock, 25 on the bull, three ways (3.5.6): step 1 the app's correction "bouncer" accepted; step 2 refused
+//    -> Undo on the 25; step 3 both refused -> the game tab starts the next Autodarts game. DartCounter always gets a
+//    Miss for the 25 and ends on 50. No click in DartCounter.
 // 3) The other tab runs another version: both panels say which tab to refresh.
 import { webkit, chromium } from "playwright";
 import fs from "node:fs";
@@ -40,6 +42,8 @@ for (const [name, type] of [["webkit", webkit], ["chromium", chromium]]) {
   // 1) X01 lost leg
   {
     const gm = createGM(), logs = [], ad = createAutodarts({ variant: "X01" });
+    // the Board Manager stays in takeout after the leg (yellow in Autodarts Desktop), counting stops until a Reset
+    gm.bm.state = { status: "Takeout", event: "Takeout started", numThrows: 3, throws: [{ segmentName: "S1", segmentNumber: 1, multiplier: 1 }] };
     const { ctx, dc, game } = await tabs(browser, gm, logs);
     await ad.route(game);
     await game.goto(ad.url());
@@ -65,31 +69,55 @@ for (const [name, type] of [["webkit", webkit], ["chromium", chromium]]) {
     await ad.visit(["T20", "S1", "S1"]);
     const entered = await until(() => logs.find(l => /DC Wpisano 62 ✓/.test(l)), 8000);
     check(name + " X01: next visit after the reset entered in DartCounter", !!entered && has(logs, /DC Z gry Autodarts: T20 S1 S1 .*id \S+~/), logs.slice(-12));
+    // board Reset after the leg: stuck takeout -> POST 127.0.0.1:3180/api/reset after the grace time, state before / after
+    const ba = await until(() => { const a = gm.get("ad2dc3_board_ack"); return a && /^(ok|fail|skipped)$/.test(a.state) ? a : null; }, 20000);
+    const posts = gm.bm.reqs.filter(r => r.method === "POST");
+    check(name + " X01 board: stuck takeout after the leg -> one local Reset (POST 127.0.0.1:3180/api/reset), after the Autodarts reset",
+      ba && ba.state === "ok" && posts.length === 1 && posts[0].url === "http://127.0.0.1:3180/api/reset" && posts[0].t > ack.ts, { ba, posts, ackTs: ack && ack.ts });
+    const dcBoardLog = await until(() => has(logs, /DC Reset tarczy ✓ karta gry: przed: wyjmowanie/), 3000);
+    check(name + " X01 board: state before (takeout) and after (throwing) in the answer and in the DartCounter log",
+      ba && /przed: wyjmowanie lotek \(Takeout/.test(ba.how) && /po: rzucanie \(Throw/.test(ba.how) && dcBoardLog, { ba, logs: logs.filter(l => /tarczy/.test(l)) });
     check(name + " X01: no page errors", !logs.some(l => /PAGEERROR/.test(l)), logs.filter(l => /PAGEERROR/.test(l)));
     await ctx.close();
   }
 
-  // 2) Around the Clock: 25 on the bull
-  {
+  // 2) Around the Clock: 25 on the bull, step 1 / 2 / 3
+  for (const mode of [{ step: 1, patch: "accept", undo: "ok" }, { step: 2, patch: "reject", undo: "ok" }, { step: 3, patch: "reject", undo: "refuse" }]) {
     const gm = createGM(), logs = [], ad = createAutodarts({ variant: "ATC" });
+    ad.patchMode = mode.patch; ad.undoMode = mode.undo;
     const { ctx, dc, game } = await tabs(browser, gm, logs);
+    const tag = name + " ATC step " + mode.step + ":";
     await ad.route(game);
     await game.goto(ad.url());
     await dc.goto("https://app.dartcounter.net/game/around-the-clock");
     await until(() => has(logs, /AD Odbieram stan meczu/) && has(logs, /DC Ta karta DartCounter jest aktywna/), 8000);
     const atc = () => dc.evaluate(() => ({ target: window.__atc.target, log: window.__atc.log.slice(), done: window.__atc.done }));
-    const turns = [["S1", "S2", "S3"], ["S4", "S5", "S6"], ["S7", "S8", "S9"], ["S10", "S11", "S12"], ["S13", "S14", "S15"], ["S16", "S17", "S18"], ["S19", "S20", "25"]];
+    const turns = [["S1", "S2", "S3"], ["S4", "S5", "S6"], ["S7", "S8", "S9"], ["S10", "S11", "S12"], ["S13", "S14", "S15"], ["S16", "S17", "S18"]];
     for (const t of turns) { const n = (await atc()).log.length; await ad.visit(t); await until(async () => (await atc()).log.length > n, 6000); }
-    const an = await until(() => { const a = gm.get("ad2dc3_auto_next"); return a && a.kind === "atc" ? a : null; }, 8000);
+    // the turn with the 25; the darts come out (takeout) a moment later, like on the real board
+    const n7 = (await atc()).log.length;
+    for (const l of ["S19", "S20", "25"]) { ad.dart(l); await sleep(150); }
+    await sleep(1500);
+    ad.takeout();
+    await until(async () => (await atc()).log.length > n7, 8000);
+    const fix = await until(() => gm.get("ad2dc3_atc_fix"), 8000);
+    if (mode.step === 3) await until(() => gm.get("ad2dc3_auto_next"), 8000);
     let g = await atc();
-    check(name + " ATC: DartCounter took 25 as Miss and waits for the bull", g.log[g.log.length - 1] === "S19 S20 Miss" && g.target === 21 && !g.done, g);
-    check(name + " ATC: correction tried (PATCH), then games/next by the game tab itself", ad.api.join("|") === "PATCH /matches/{id}/throws 400|POST /matches/{id}/games/next 200", ad.api);
-    check(name + " ATC: Autodarts plays again (fresh game), result for the DartCounter panel", an && an.ok && !ad.m.finished && ad.m.leg === 2, { an, leg: ad.m.leg });
-    check(name + " ATC: no order from DartCounter was needed", !gm.get("ad2dc3_reset_cmd") || has(logs, /DC ATC: karta gry już sama zaczęła/), gm.get("ad2dc3_reset_cmd"));
+    check(tag + " DartCounter took 25 as Miss and waits for the bull", g.log[g.log.length - 1] === "S19 S20 Miss" && g.target === 21 && !g.done, g);
+    check(tag + " the app's correction format { type: 'bouncer' } was sent", JSON.stringify(ad.patchBody) === JSON.stringify({ changes: { "2": { type: "bouncer" } } }), ad.patchBody);
+    const want = { 1: "PATCH /matches/{id}/throws 200", 2: "PATCH /matches/{id}/throws 400|POST /matches/{id}/undo 200",
+      3: "PATCH /matches/{id}/throws 400|POST /matches/{id}/undo 400|POST /matches/{id}/games/next 200" }[mode.step];
+    check(tag + " Autodarts calls " + want, ad.api.join("|") === want, ad.api);
+    const dcStepLog = await until(() => has(logs, new RegExp("DC ATC: karta gry \\[krok " + mode.step + " z 3\\]")), 3000);
+    check(tag + " the log says which step worked", fix && fix.path === mode.step && has(logs, new RegExp("AD ATC \\[krok " + mode.step + " z 3\\]")) && dcStepLog,
+      { fix, logs: logs.filter(l => /krok/.test(l)) });
+    check(tag + (mode.step < 3 ? " Autodarts plays on at the bull (same game)" : " Autodarts plays again (fresh game)"),
+      mode.step < 3 ? !ad.m.finished && ad.m.leg === 1 && ad.m.state.currentTargets[0] === 20 : !ad.m.finished && ad.m.leg === 2, { leg: ad.m.leg, finished: ad.m.finished, target: ad.m.state.currentTargets[0] });
     await ad.visit(["BULL"]);
     g = await until(async () => { const x = await atc(); return x.done ? x : null; }, 6000);
-    check(name + " ATC: 50 ends the DartCounter game, nothing clicked by hand", g && g.done && g.log[g.log.length - 1] === "BULL", g || await atc());
-    check(name + " ATC: no page errors", !logs.some(l => /PAGEERROR/.test(l)), logs.filter(l => /PAGEERROR/.test(l)));
+    check(tag + " 50 ends the DartCounter game" + (mode.step < 3 ? " and the Autodarts game" : "") + ", nothing clicked by hand",
+      g && g.done && g.log[g.log.length - 1] === "BULL" && (mode.step === 3 || ad.m.finished), { g: g || await atc(), adFinished: ad.m.finished });
+    check(tag + " no page errors", !logs.some(l => /PAGEERROR/.test(l)), logs.filter(l => /PAGEERROR/.test(l)));
     await ctx.close();
   }
 

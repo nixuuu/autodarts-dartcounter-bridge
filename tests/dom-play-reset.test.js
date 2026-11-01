@@ -64,7 +64,8 @@ function makePlay(store, api, onCmd, opt) {
   w.eval(SCRIPT);
   const ws = new w.WebSocket("wss://play.ws.autodarts.com/ms/v0/subscribe");
   const send = s => ws.dispatchEvent(new w.MessageEvent("message", { data: JSON.stringify({ channel: "autodarts.matches", topic: s.id + ".state", data: s }) }));
-  return { w, calls, logs, send, nav };
+  const sendBoard = b => ws.dispatchEvent(new w.MessageEvent("message", { data: JSON.stringify({ channel: "autodarts.boards", topic: "b.state", data: b }) }));
+  return { w, calls, logs, send, sendBoard, nav };
 }
 // the DartCounter tab plays Around the Clock with the bridge on (its heartbeat), needed for the automatic ATC restart
 const dcAtc = store => { const beat = () => store.set("ad2dc3_dc_hb", { ts: Date.now(), v: "3.5.5", path: "/game/around-the-clock", enabled: true }); beat(); return setInterval(beat, 500); };
@@ -358,13 +359,15 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check("helper answer without source === window (sandbox) -> ack ok", ack(store).state === "ok", ack(store));
   }
 
-  // 10) 3.5.3 Around the Clock, mode Full: 25 on the bull target -> corrected in Autodarts to a miss (PATCH throws)
+  // 10) Around the Clock, mode Full: 25 on the bull target -> step 1: the app's correction "bouncer" (3.5.6), step 2:
+  //     Undo on the 25 + Miss to DartCounter, step 3: the 3.5.5 restart. Only while DartCounter plays ATC (heartbeat).
   const atcBull = o => state(Object.assign({ variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, gameScores: [20],
     state: { targets: [[...Array.from({ length: 20 }, (_, i) => ({ number: i + 1, bed: "Full" })), { number: 25, bed: "Full" }]], currentTargets: [20] } }, o));
   const turn = (round, throws) => ({ round, turns: [{ round, playerId: "p1", throws }] });
   const C = (n, m, x, y) => Object.assign(T(n, m), { coords: { x, y } });
   {
     const store = makeStore();
+    const dcBeat10 = dcAtc(store);
     let pg, body = null;
     pg = makePlay(store, (m, p, b) => {
       if (m === "PATCH" && p === "/matches/m1/throws") {
@@ -377,27 +380,74 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     pg.send(atcBull(turn(12, [T(20, 1)])));
     pg.send(atcBull(Object.assign(turn(12, [T(20, 1), C(25, 1, 0.03, 0.04)]), { finished: true })));
     await sleep(600);
-    check("ATC 25 on the bull -> PATCH throws with the dart moved outside the board",
-      pg.calls.join("|") === "PATCH /matches/m1/throws" && body && body.changes && body.changes["1"] && body.changes["1"].type === "Normal" &&
-      Math.abs(Math.hypot(body.changes["1"].coords.x, body.changes["1"].coords.y) - 1.5) < 1e-9, { calls: pg.calls, body });
+    check("ATC 25 on the bull -> step 1: PATCH throws in the app's format { type: 'bouncer' } (no 'Normal')",
+      pg.calls.join("|") === "PATCH /matches/m1/throws" && JSON.stringify(body) === JSON.stringify({ changes: { "1": { type: "bouncer" } } }), { calls: pg.calls, body });
     check("ATC 25 on the bull -> no visit while Autodarts corrects", visits(store).length === 0, visits(store));
     pg.send(atcBull(turn(12, [T(20, 1), { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } }, T(25, 2)])));
     pg.send(atcBull(Object.assign(turn(12, [T(20, 1), { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } }, T(25, 2)]), { finished: true })));
     await sleep(400);
     const v = visits(store);
     check("after the correction: one visit S20 Miss BULL, ends the game on 50", v.length === 1 && v[0].labels.split(" ").length === 3 && v[0].labels.split(" ")[0] === "S20" && v[0].labels.split(" ")[1] !== "25" && v[0].labels.split(" ")[2] === "BULL" && v[0].finished === true, v);
-    check("correction logged", pg.logs.some(l => /25 na bullu/.test(l)) && pg.logs.some(l => /przyj\u0105\u0142 korekt/.test(l)), pg.logs.filter(l => /ATC/.test(l)));
+    check("correction logged (step 1 of 3)", pg.logs.some(l => /25 na bullu/.test(l)) && pg.logs.some(l => /krok 1 z 3\]: Autodarts przyj\u0105\u0142 korekt/.test(l)) &&
+      (store.get("ad2dc3_atc_fix") || {}).path === 1, pg.logs.filter(l => /ATC/.test(l)));
+    clearInterval(dcBeat10);
   }
-  // correction refused -> the held state goes on: the visit with 25 ends the Autodarts game (fallback: restart from DartCounter)
+  // correction refused -> step 2: Undo on the 25; Autodarts plays on, DartCounter gets a Miss in place of the 25
   {
     const store = makeStore();
+    const dcBeat = dcAtc(store);
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (m === "PATCH") return { ok: false, status: 400, err: "HTTP 400 invalid" };
+      if (p === "/matches/m1/undo") { setTimeout(() => pg.send(atcBull(turn(12, [T(20, 1)]))), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(atcBull(turn(12, [T(20, 1)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), T(25, 1)]), { finished: true, gameFinished: true, winner: 0 })));
+    await sleep(800);
+    check("correction refused -> Undo on the 25 (PATCH, then POST undo), no restart", pg.calls.join("|") === "PATCH /matches/m1/throws|POST /matches/m1/undo", pg.calls);
+    pg.send(atcBull(turn(12, [T(20, 1), T(1, 1)]))); // the next dart of the turn
+    pg.send(atcBull(turn(13, [])));
+    await sleep(500);
+    const v = visits(store);
+    check("Undo -> one visit with Miss in place of the 25: S20 M S1, game not finished", v.length === 1 && v[0].labels === "S20 M S1" && v[0].finished === false, v);
+    check("Undo logged as step 2 of 3", pg.logs.some(l => /krok 2 z 3\]: Undo/.test(l)) && (store.get("ad2dc3_atc_fix") || {}).path === 2, pg.logs.filter(l => /ATC/.test(l)));
+    clearInterval(dcBeat);
+  }
+  // correction accepted but Autodarts still ends the game -> Undo
+  {
+    const store = makeStore();
+    const dcBeat = dcAtc(store);
+    let pg;
+    const miss = { segment: { name: "Miss", number: 0, multiplier: 0, bed: "Outside" } };
+    pg = makePlay(store, (m, p) => {
+      if (m === "PATCH") { setTimeout(() => pg.send(atcBull(Object.assign(turn(12, [T(20, 1), miss]), { finished: true, gameFinished: true, winner: 0 }))), 50); return { ok: true, status: 200 }; }
+      if (p === "/matches/m1/undo") { setTimeout(() => pg.send(atcBull(turn(12, [T(20, 1)]))), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(atcBull(turn(12, [T(20, 1)])));
+    pg.send(atcBull(Object.assign(turn(12, [T(20, 1), T(25, 1)]), { finished: true, gameFinished: true, winner: 0 })));
+    await sleep(3500);
+    check("correction accepted but game still over -> Undo (step 2)", pg.calls.join("|") === "PATCH /matches/m1/throws|POST /matches/m1/undo" && (store.get("ad2dc3_atc_fix") || {}).path === 2,
+      { calls: pg.calls, fix: store.get("ad2dc3_atc_fix") });
+    clearInterval(dcBeat);
+  }
+  // correction and Undo refused -> step 3: the visit with 25 ends the Autodarts game (DartCounter: Miss; restart)
+  {
+    const store = makeStore();
+    const dcBeat = dcAtc(store);
     const pg = makePlay(store, () => ({ ok: false, status: 400, err: "HTTP 400 game finished" }));
     await sleep(1800);
     pg.send(atcBull(turn(12, [T(20, 1)])));
     pg.send(atcBull(Object.assign(turn(12, [T(20, 1), T(25, 1)]), { finished: true })));
     await sleep(800);
     const v = visits(store);
-    check("correction refused -> visit S20 S25 published as finished (DartCounter: 25 = miss, Autodarts restarted)", v.length === 1 && v[0].labels === "S20 25" && v[0].finished === true, v);
+    check("correction and Undo refused -> step 3: visit S20 25 published as finished (DartCounter: 25 = miss, Autodarts restarted)",
+      v.length === 1 && v[0].labels === "S20 25" && v[0].finished === true && /^PATCH \/matches\/m1\/throws\|POST \/matches\/m1\/undo/.test(pg.calls.join("|")) &&
+      (store.get("ad2dc3_atc_fix") || {}).path === 3, { v, calls: pg.calls });
+    clearInterval(dcBeat);
   }
   // DartCounter counts 25 too ("bull or bullseye") -> no correction
   {
@@ -499,7 +549,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     pg.send(atcR({ finished: true, gameFinished: true, winner: 0 }, [R("b1", 19, 1), R("b2", 20, 1), R("b3", 25, 1)], 20, true));
     await sleep(4000);
     const an = store.get("ad2dc3_auto_next") || {};
-    check("ATC over on 25 -> PATCH (refused), then POST games/next by the game tab itself", pg.calls.join("|") === "PATCH /matches/m1/throws|POST /matches/m1/games/next", pg.calls);
+    check("ATC over on 25 -> PATCH and Undo refused, then POST games/next by the game tab itself", pg.calls.join("|") === "PATCH /matches/m1/throws|POST /matches/m1/undo|POST /matches/m1/games/next", pg.calls);
     check("ATC over on 25 -> the visit S19 S20 25 went out before the restart", after === 1 && visits(store)[0].labels === "S19 S20 25" && visits(store)[0].finished === true, { after, v: visits(store) });
     check("ATC over on 25 -> result for the DartCounter panel (kind atc, ok)", an.kind === "atc" && an.ok === true && /games\/next/.test(an.how), an);
     check("ATC over on 25 -> no order from DartCounter needed", !store.get("ad2dc3_reset_cmd"), store.get("ad2dc3_reset_cmd"));
@@ -520,6 +570,94 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     pg2.send(atcR({ finished: true, gameFinished: true, winner: 0 }, [R("c1", 20, 1), R("c2", 25, 2)], 20, true));
     await sleep(2500);
     check("ATC over on 50 -> no restart, no correction", pg2.calls.length === 0, pg2.calls);
+  }
+
+  // 3.5.6 X01: board Reset after a leg, ordered by DartCounter. Fake local Board Manager (GM_xmlhttpRequest): /api/state,
+  // /api/reset (the board is throwing again after it). Order: the Autodarts reset of the leg first, then the board: when
+  // it is ready, or still in takeout after 6 s (stuck, yellow in Autodarts Desktop); never with darts of a turn on it.
+  const boardManager = (w, opt) => {
+    const bm = { reqs: [], state: { status: "Takeout in progress", event: "Takeout started", numThrows: 0, throws: [] } };
+    w.GM_xmlhttpRequest = d => {
+      bm.reqs.push({ t: Date.now(), m: d.method, u: d.url });
+      setTimeout(() => {
+        if (opt && opt.down) return d.onerror({ error: "connection refused" });
+        if (/\/api\/state$/.test(d.url)) return d.onload({ status: 200, responseText: JSON.stringify(bm.state) });
+        if (d.method === "POST" && /\/api\/reset$/.test(d.url)) { bm.state = { status: "Throw", event: "Manual reset", numThrows: 0 }; return d.onload({ status: 200, responseText: "" }); }
+        d.onload({ status: 404, responseText: "" });
+      }, 5);
+    };
+    return bm;
+  };
+  {
+    const store = makeStore();
+    let pg, resetDone = 0;
+    const history = [];
+    const play = s => { history.push(pg.lastState); pg.lastState = s; pg.send(s); };
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") { if (!history.length) return { ok: false, status: 400 }; const prev = history.pop(); pg.lastState = prev; setTimeout(() => { pg.send(prev); if (!history.length) resetDone = Date.now(); }, 30); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    const bm = boardManager(pg.w);
+    await sleep(1800);
+    pg.lastState = real({}); pg.send(pg.lastState); history.length = 0;
+    for (let i = 1; i <= 3; i++) play(real({ round: 1, turns: [{ round: 1, playerId: "p1", throws: [R("e1", 20, 1), R("e2", 20, 1), R("e3", 20, 1)].slice(0, i) }], gameScores: [501 - 20 * i] }));
+    play(real({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], gameScores: [441] }));
+    await sleep(300);
+    order(store);
+    store.set("ad2dc3_board_cmd", { id: "dc-b1", ts: Date.now(), what: "koniec lega (przegrany)", v: "3.5.6", base: "http://127.0.0.1:3180" });
+    await sleep(2500);
+    check("board: waits a moment while the board shows a takeout (no POST /api/reset yet)", !bm.reqs.some(r => r.m === "POST") && (store.get("ad2dc3_board_ack") || {}).state === "waiting" &&
+      /wyjmowanie/.test(store.get("ad2dc3_board_ack").how), { reqs: bm.reqs.slice(-3), ack: store.get("ad2dc3_board_ack") });
+    bm.state = { status: "Throw", event: "Takeout finished", numThrows: 0 }; // darts pulled, board empty
+    await sleep(4000);
+    const post = bm.reqs.find(r => r.m === "POST");
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("board: empty -> POST http://127.0.0.1:3180/api/reset once, ack ok (local)", post && post.u === "http://127.0.0.1:3180/api/reset" && bm.reqs.filter(r => r.m === "POST").length === 1 &&
+      ba.state === "ok" && /lokalnie: POST 127\.0\.0\.1:3180\/api\/reset \u2192 HTTP 200/.test(ba.how), { reqs: bm.reqs.filter(r => r.m === "POST"), ba });
+    check("board: after the Autodarts reset of the leg (Undo done first)", resetDone && post && post.t > resetDone && ack(store).state === "ok", { resetDone, post, ack: ack(store) });
+  }
+  // stuck takeout after the leg (yellow): Reset after the grace time; state before and after in the answer
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: false, status: 404, err: "HTTP 404" }));
+    const bm = boardManager(pg.w);
+    bm.state = { status: "Takeout", event: "Takeout started", numThrows: 3, throws: [{ segmentName: "S20", segmentNumber: 20, multiplier: 1 }, { segmentName: "S1", segmentNumber: 1, multiplier: 1 }, { segmentName: "S5", segmentNumber: 5, multiplier: 1 }] };
+    await sleep(1800);
+    pg.send(real({}));
+    store.set("ad2dc3_board_cmd", { id: "dc-b3", ts: Date.now(), what: "koniec lega (wygrany)", v: "3.5.6", base: "http://127.0.0.1:3180" });
+    await sleep(5000);
+    check("board stuck in takeout: no Reset before the grace time", !bm.reqs.some(r => r.m === "POST"), bm.reqs.filter(r => r.m === "POST"));
+    await sleep(7000);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("board stuck in takeout -> Reset after ~6 s, answer with the state before (takeout) and after (throw)", ba.state === "ok" && bm.reqs.filter(r => r.m === "POST").length === 1 &&
+      /przed: wyjmowanie lotek \(Takeout.*zawieszone.*lokalnie: POST 127\.0\.0\.1:3180\/api\/reset \u2192 HTTP 200 \| po: rzucanie \(Throw/.test(ba.how), ba);
+  }
+  // darts of a turn on the board (somebody throws): never a Reset then
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: false, status: 404, err: "HTTP 404" }));
+    const bm = boardManager(pg.w);
+    bm.state = { status: "Throw", event: "Throw detected", numThrows: 1, throws: [{ segmentName: "T20", segmentNumber: 20, multiplier: 3 }] };
+    await sleep(1800);
+    pg.send(real({}));
+    store.set("ad2dc3_board_cmd", { id: "dc-b4", ts: Date.now(), what: "koniec lega (przegrany)", v: "3.5.6", base: "http://127.0.0.1:3180" });
+    await sleep(8000);
+    check("board with darts of a turn (throwing) -> no Reset, waits", !bm.reqs.some(r => r.m === "POST") && /lotki w tarczy/.test((store.get("ad2dc3_board_ack") || {}).how || ""), { reqs: bm.reqs.filter(r => r.m === "POST"), ack: store.get("ad2dc3_board_ack") });
+  }
+  // local Board Manager not reachable -> board state of the game page (channel autodarts.boards), cloud board Reset
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => (m === "POST" && p === "/boards/b-77/reset" ? { ok: true, status: 200 } : { ok: false, status: 404, err: "HTTP 404" }));
+    boardManager(pg.w, { down: true });
+    await sleep(1800);
+    pg.send(real({ players: [{ id: "p1", name: "Ja", boardId: "b-77" }] }));
+    const bws = pg.w.__ad2dcWs || null;
+    pg.sendBoard({ status: "Throw", event: "Takeout finished", numThrows: 0 });
+    store.set("ad2dc3_board_cmd", { id: "dc-b2", ts: Date.now(), what: "koniec lega (wygrany)", v: "3.5.6", base: "http://127.0.0.1:3180" });
+    await sleep(5000);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("board: local Board Manager down -> cloud POST /boards/<id>/reset with the app's login, ack ok", pg.calls.join("|") === "POST /boards/b-77/reset" && ba.state === "ok" && /chmura: POST \/boards\/b-77\/reset \u2192 HTTP 200/.test(ba.how), { calls: pg.calls, ba });
   }
 
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");

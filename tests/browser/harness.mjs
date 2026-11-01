@@ -13,9 +13,19 @@ export const sleep = ms => new Promise(r => setTimeout(r, ms));
 export function createGM() {
   const store = Object.create(null);
   const pages = new Set();
+  // fake local Board Manager (Autodarts Desktop) behind GM_xmlhttpRequest: GET /api/state, POST /api/reset (throwing again)
+  const bm = { state: { status: "Throw", event: "Takeout finished", numThrows: 0 }, reqs: [] };
   async function attach(page, scriptText) {
     pages.add(page);
     page.on("close", () => pages.delete(page));
+    await page.exposeBinding("__ad2dcXhr", async (_src, method, url) => {
+      bm.reqs.push({ t: Date.now(), method, url });
+      const m = /^http:\/\/127\.0\.0\.1:3180(\/.*)$/.exec(url);
+      if (!m) return { error: "test: no network" };
+      if (method === "GET" && m[1] === "/api/state") return { status: 200, text: JSON.stringify(bm.state) };
+      if (method === "POST" && m[1] === "/api/reset") { bm.state = { status: "Throw", event: "Manual reset", numThrows: 0 }; return { status: 200, text: "" }; }
+      return { status: 404, text: "" };
+    });
     await page.exposeBinding("__ad2dcGM", async (_src, op, k, v) => {
       if (op === "init") return JSON.stringify(store);
       if (op === "set") {
@@ -34,7 +44,9 @@ export function createGM() {
   const GM_getValue = (k, d) => (k in cache ? JSON.parse(cache[k]) : d);
   const GM_setValue = (k, v) => { const old = cache[k], j = JSON.stringify(v); cache[k] = j; real.__ad2dcGM("set", k, j); for (const l of listeners) if (l.k === k) { try { l.fn(k, parse(old), v, false); } catch (e) { console.error(e); } } };
   const GM_addValueChangeListener = (k, fn) => { listeners.push({ k, fn }); return listeners.length; };
-  const GM_xmlhttpRequest = d => setTimeout(() => d.onerror && d.onerror({ error: "test: no network" }), 5);
+  const GM_xmlhttpRequest = d => { real.__ad2dcXhr(d.method || "GET", d.url).then(r => {
+    if (r.error) { if (d.onerror) d.onerror({ error: r.error }); } else if (d.onload) d.onload({ status: r.status, responseText: r.text, response: r.text });
+  }); };
   const GM_setClipboard = () => {};
   const GM_info = { scriptHandler: "Tampermonkey (test)", version: "5" };
   const proxy = new Proxy(real, {
@@ -49,7 +61,7 @@ ${scriptText}
   });
 })();`);
   }
-  return { attach, get: k => (k in store ? JSON.parse(store[k]) : undefined), set: (k, v) => { store[k] = JSON.stringify(v); } };
+  return { attach, bm, get: k => (k in store ? JSON.parse(store[k]) : undefined), set: (k, v) => { store[k] = JSON.stringify(v); } };
 }
 
 // ---------------- fake Autodarts ----------------
@@ -124,7 +136,19 @@ export function createAutodarts({ variant = "X01", baseScore = 501 } = {}) {
       if (path === `/matches/${id}/undo`) { if (ad.undoMode === "ok" && ad.hist.length) { ad.m = ad.hist.pop(); setTimeout(ad.send, 40); } else status = 400; }
       else if (path === `/matches/${id}/games/restart`) { if (ad.restartMode === "ok") { fresh(false); setTimeout(ad.send, 80); } else status = 404; }
       else if (path === `/matches/${id}/games/next`) { if (ad.m.finished || ad.m.gameFinished) { fresh(true); setTimeout(ad.send, 80); } else status = 400; }
-      else if (path === `/matches/${id}/throws` && req.method() === "PATCH") status = ad.patchMode === "accept" ? 200 : 400;
+      else if (path === `/matches/${id}/throws` && req.method() === "PATCH") {
+        ad.patchBody = req.postDataJSON();
+        if (ad.patchMode !== "accept") status = 400;
+        else {
+          for (const [i, c] of Object.entries((ad.patchBody || {}).changes || {})) {
+            const t = ad.m.turns[0].throws[Number(i)];
+            if (t && c.type === "bouncer") { t.segment = { name: "Miss", number: 0, bed: "Outside", multiplier: 0 }; t.entry = "corrected_bouncer"; }
+          }
+          const st = ad.m.state, tg = st.targets && st.targets[0][st.currentTargets[0]];
+          if (tg && ad.m.finished) { tg.hits = 0; ad.m.finished = ad.m.gameFinished = false; ad.m.winner = -1; }
+          setTimeout(ad.send, 60);
+        }
+      }
       else status = 404;
       ad.api.push(req.method() + " " + path.replace(id, "{id}") + " " + status);
       return r.fulfill({ status, headers: Object.assign({ "content-type": "application/json" }, cors), body: "{}" });

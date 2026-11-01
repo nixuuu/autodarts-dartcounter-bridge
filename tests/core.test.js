@@ -650,5 +650,17 @@ test("match tracker skip: old darts left by a half reset are never a visit", () 
   assert.deepEqual(out.map(v => v.darts.map(d => d.label).join(" ")), ["T20"]);
 });
 
+test("boardPhase: Board Manager state for the board Reset after a leg (3.5.6)", () => {
+  const P = raw => Core.boardPhase(raw).phase;
+  assert.equal(P({ status: "Throw", event: "Takeout finished", numThrows: 0 }), "ready");
+  assert.equal(P({ status: "throw", event: "takeoutFinished", throws: [] }), "ready");
+  assert.equal(P({ status: "Takeout", event: "Takeout started", throws: [newT("S20", 20, 1, "SingleOuter"), newT("S1", 1, 1, "SingleOuter"), newT("S5", 5, 1, "SingleOuter")] }), "takeout"); // yellow, maybe stuck
+  assert.equal(P({ status: "takeoutInProgress", event: "takeoutStarted", throws: [] }), "takeout");
+  assert.equal(P({ status: "Throw", event: "Throw detected", throws: [newT("T20", 20, 3, "Triple")] }), "darts"); // somebody throws: never reset
+  assert.equal(P({ status: "Calibrating" }), "busy");
+  assert.equal(P({ status: "Stopped" }), "busy");
+  assert.equal(P(null), "none");
+});
+
 if (failed) { console.log(failed + " test(s) failed"); process.exit(1); }
 console.log("all core tests passed");
