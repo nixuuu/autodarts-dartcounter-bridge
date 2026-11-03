@@ -428,7 +428,7 @@ test("visit goes only to the matching DartCounter game (X01 vs ATC)", () => {
 
 test("parseMatch keeps the ATC settings for the bridge", () => {
   const m = Core.parseMatch({ id: "a1", variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, players: P, player: 0, round: 1, turns: [{ round: 1, playerId: "p1", throws: [seg("S1", 1, 1, "SingleInner")] }] });
-  assert.equal(m.variant, "ATC"); assert.deepEqual(m.settings, { order: "1-20-Bull", mode: "Full", hits: 1 });
+  assert.equal(m.variant, "ATC"); assert.deepEqual({ order: m.settings.order, mode: m.settings.mode, hits: m.settings.hits }, { order: "1-20-Bull", mode: "Full", hits: 1 });
   const out = [];
   const tr = Core.createMatchTracker(v => out.push(v));
   tr.update(m); tr.update(Core.parseMatch({ id: "a1", variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, players: P, player: 0, round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }] }));
@@ -660,6 +660,51 @@ test("boardPhase: Board Manager state for the board Reset after a leg (3.5.6)", 
   assert.equal(P({ status: "Calibrating" }), "busy");
   assert.equal(P({ status: "Stopped" }), "busy");
   assert.equal(P(null), "none");
+});
+
+test("Cricket (3.6.0): DartCounter settings, Autodarts settings check, keys", () => {
+  const dc = Core.cricketDcConfig({ mode: "cricket", scoring_type: "cut_throat", showCutThroat: true });
+  assert.deepEqual([dc.mode, dc.scoring, dc.low], ["cricket", "cut_throat", 15]);
+  assert.equal(Core.cricketDcConfig({ mode: "cricket", scoring_type: "no_score", showCutThroat: false }).scoring, "standard"); // one player: DartCounter plays standard
+  assert.deepEqual([Core.cricketDcConfig(null).mode, Core.cricketDcConfig(null).scoring], ["cricket", "standard"]);
+  assert.equal(Core.cricketDcConfig({ mode: "tactics" }).low, 10);
+  const std = Core.cricketDcConfig({ mode: "cricket", scoring_type: "standard", showCutThroat: true });
+  assert.equal(Core.cricketAutodartsCheck({ gameMode: "Cricket", scoringMode: "Standard", players: 1 }, std).ok, true);
+  assert.equal(Core.cricketAutodartsCheck({ gameMode: "Cricket", scoringMode: "Cut Throat", players: 1 }, std).ok, true); // alone in Autodarts: only a dart feed
+  assert.equal(Core.cricketAutodartsCheck({ gameMode: "Cricket", scoringMode: "Cut Throat", players: 3 }, std).ok, false);
+  assert.equal(Core.cricketAutodartsCheck({ gameMode: "Tactics", scoringMode: "Standard" }, std).ok, false);
+  assert.equal(Core.cricketAutodartsCheck({ gameMode: "Hidden Cricket", scoringMode: "Standard" }, std).ok, false);
+  assert.equal(Core.cricketAutodartsCheck(null, std).ok, true);
+  const k = (l, c) => Core.cricketKey(Core.normalizeThrow(l), c || std);
+  assert.deepEqual(["T20", "S19", "D15", "S14", "25", "BULL", "M3"].map(l => k(l)), ["T20", "19", "D15", null, "SBULL", "BULL", null]);
+  assert.equal(k("S14", Core.cricketDcConfig({ mode: "tactics" })), "14");
+  assert.equal(k("S9", Core.cricketDcConfig({ mode: "tactics" })), null);
+  assert.equal(Core.visitFits("Cricket", "cricket"), true);
+  assert.equal(Core.visitFits("X01", "cricket"), false);
+  assert.equal(Core.visitFits("Cricket", "x01"), false);
+  assert.equal(Core.visitFits("ATC", "atc"), true);
+});
+test("Cricket (3.6.0): fresh leg, game over by gameWinner, reset plan", () => {
+  const c = o => Object.assign({ id: "c1", variant: "Cricket", round: 1, gameScores: [0], gameWinner: -1, turns: [{ round: 1, playerId: "p", throws: [] }] }, o);
+  assert.equal(Core.isFreshLeg(c({})), true);
+  assert.equal(Core.isFreshLeg(c({ round: 2, turns: [{ round: 2, throws: [] }] })), false);
+  assert.equal(Core.isFreshLeg(c({ turns: [{ round: 1, throws: [oldT("S20", 20, "Single", 1)] }] })), false);
+  assert.equal(Core.isFreshLeg(c({ gameWinner: 0 })), false);
+  assert.equal(Core.matchOver(c({ gameWinner: 0 })), true);
+  assert.equal(Core.matchOver(c({})), false);
+  assert.equal(Core.resetPlan(c({ gameWinner: 0, legs: 3 })), "next");
+  assert.equal(Core.resetPlan(c({ round: 4 })), "restart");
+  assert.equal(Core.parseMatch(c({ gameWinner: 0, players: [{ id: "p" }], player: 0 })).finished, true);
+  assert.equal(Core.parseMatch(c({ players: [{ id: "p" }], player: 0, settings: { gameMode: "Tactics", scoringMode: "No Score" } })).settings.gameMode, "Tactics");
+  // X01 untouched: a game winner field alone does not end an X01 leg for the tracker
+  assert.equal(Core.parseMatch({ id: "x", variant: "X01", gameWinner: 0, turns: [], players: [], player: 0 }).finished, false);
+  assert.equal(Core.resetPlan({ id: "x", variant: "X01", gameWinner: 0, round: 4, gameScores: [301], turns: [] }), "restart");
+  // the variant may also come in the settings only
+  assert.equal(Core.isCricket({ settings: { variant: "Cricket" } }), true);
+  assert.equal(Core.isCricket({ variant: "X01", settings: { variant: "Cricket" } }), false);
+  assert.equal(Core.isCricket({ variant: "ATC" }), false);
+  assert.equal(Core.isCricket(null), false);
+  assert.equal(Core.matchOver({ settings: { variant: "Cricket" }, gameWinner: 1 }), true);
 });
 
 if (failed) { console.log(failed + " test(s) failed"); process.exit(1); }

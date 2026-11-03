@@ -582,7 +582,7 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
       setTimeout(() => {
         if (opt && opt.down) return d.onerror({ error: "connection refused" });
         if (/\/api\/state$/.test(d.url)) return d.onload({ status: 200, responseText: JSON.stringify(bm.state) });
-        if (d.method === "POST" && /\/api\/reset$/.test(d.url)) { bm.state = { status: "Throw", event: "Manual reset", numThrows: 0 }; return d.onload({ status: 200, responseText: "" }); }
+        if (d.method === "POST" && /\/api\/reset$/.test(d.url)) { bm.state = { status: "Throw", event: "Manual reset", numThrows: 0 }; if (bm.onReset) bm.onReset(); return d.onload({ status: 200, responseText: "" }); }
         d.onload({ status: 404, responseText: "" });
       }, 5);
     };
@@ -658,6 +658,140 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     await sleep(5000);
     const ba = store.get("ad2dc3_board_ack") || {};
     check("board: local Board Manager down -> cloud POST /boards/<id>/reset with the app's login, ack ok", pg.calls.join("|") === "POST /boards/b-77/reset" && ba.state === "ok" && /chmura: POST \/boards\/b-77\/reset \u2192 HTTP 200/.test(ba.how), { calls: pg.calls, ba });
+  }
+
+  // 3.6.0 Cricket: state as the Autodarts app reads it (settings.gameMode / scoringMode, state.segments, gameWinner)
+  const cr = o => real(Object.assign({ variant: "Cricket", settings: { gameMode: "Cricket", scoringMode: "Standard", maxRounds: 50 }, gameScores: [0], gameWinner: -1,
+    state: { segments: [[0, 0, 0, 0, 0, 0, 0]] } }, o));
+  // won leg in Autodarts (game winner) -> next leg by itself, like X01
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(cr({ leg: 2 })), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.send(cr({ round: 9, turns: [{ round: 9, playerId: "p1", throws: [R("k1", 20, 1)] }] }));
+    pg.send(cr({ round: 9, gameWinner: 0, turns: [{ round: 9, playerId: "p1", throws: [R("k1", 20, 1), R("k2", 25, 2)] }], state: { segments: [[3, 3, 3, 3, 3, 3, 3]] } }));
+    await sleep(400);
+    check("Cricket: the winning visit goes out at once (finished)", visits(store).length === 1 && visits(store)[0].labels === "S20 BULL" && visits(store)[0].finished === true && visits(store)[0].variant === "Cricket", visits(store));
+    await sleep(3500);
+    check("Cricket: won leg in Autodarts -> POST games/next by itself", pg.calls.join("|") === "POST /matches/m1/games/next" && (store.get("ad2dc3_auto_next") || {}).ok === true, { calls: pg.calls, an: store.get("ad2dc3_auto_next") });
+  }
+  // DartCounter Cricket leg end (order with game "cricket") on a running Autodarts Cricket leg -> Undo back to its start
+  {
+    const store = makeStore();
+    let pg;
+    const history = [];
+    const play = s2 => { history.push(pg.lastState); pg.lastState = s2; pg.send(s2); };
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") { if (!history.length) return { ok: false, status: 400 }; const prev = history.pop(); pg.lastState = prev; setTimeout(() => pg.send(prev), 30); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.lastState = cr({}); pg.send(pg.lastState); history.length = 0;
+    play(cr({ round: 1, turns: [{ round: 1, playerId: "p1", throws: [R("q1", 20, 3)] }], state: { segments: [[3, 0, 0, 0, 0, 0, 0]] } }));
+    play(cr({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [] }], state: { segments: [[3, 0, 0, 0, 0, 0, 0]] } }));
+    await sleep(300);
+    store.set("ad2dc3_reset_cmd", { id: "dc-cr1", ts: Date.now(), kind: "leg", won: false, game: "cricket", v: "3.6.0", attempt: 1 });
+    await sleep(2500);
+    check("Cricket order -> Undo back to the leg start, ack ok", ack(store).state === "ok" && /Undo/.test(ack(store).how) && pg.calls.every(c => /undo/.test(c)) && pg.calls.length === 2, { calls: pg.calls, ack: ack(store) });
+    store.set("ad2dc3_reset_cmd", { id: "dc-cr2", ts: Date.now(), kind: "leg", won: false, v: "3.5.6", attempt: 1 }); // an X01 order (no game)
+    await sleep(1500);
+    check("X01 order on an Autodarts Cricket game -> fail, nothing called", ack(store).id === "dc-cr2" && ack(store).state === "fail" && /nie jest X01/.test(ack(store).how) && pg.calls.length === 2, ack(store));
+  }
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    await sleep(1800);
+    pg.send(state({ round: 3, gameScores: [380] }));
+    store.set("ad2dc3_reset_cmd", { id: "dc-cr3", ts: Date.now(), kind: "leg", won: false, game: "cricket", v: "3.6.0", attempt: 1 });
+    await sleep(1500);
+    check("Cricket order on an Autodarts X01 game -> fail, nothing called", ack(store).state === "fail" && /nie jest Cricket/.test(ack(store).how) && pg.calls.length === 0, { ack: ack(store), calls: pg.calls });
+  }
+  // manual board Reset (button in DartCounter): at once, even in takeout or with darts on the board; state logged
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: false, status: 404, err: "HTTP 404" }));
+    const bm = boardManager(pg.w);
+    bm.state = { status: "Throw", event: "Throw detected", numThrows: 1, throws: [{ segmentName: "S20", segmentNumber: 20, multiplier: 1 }] };
+    await sleep(1800);
+    pg.send(real({}));
+    const t0 = Date.now();
+    store.set("ad2dc3_board_cmd", { id: "dc-man", ts: Date.now(), what: "reset ręczny", v: "3.6.0", base: "http://127.0.0.1:3180", manual: true });
+    await sleep(6500);
+    const post = bm.reqs.find(r => r.m === "POST"), ba = store.get("ad2dc3_board_ack") || {};
+    check("manual board Reset -> POST /api/reset at once (no waiting for an empty board)", post && post.t - t0 < 1500 && ba.state === "ok" &&
+      /przed: lotki w tarczy \(Throw.*reset ręczny \| lokalnie: POST 127\.0\.0\.1:3180\/api\/reset \u2192 HTTP 200 \| po: rzucanie/.test(ba.how), { post, t0, ba });
+    check("manual: turn without darts -> no Next, the board waits for the first dart", /tarcza czeka na pierwsz/.test(ba.how) && pg.calls.length === 0, { ba, calls: pg.calls });
+  }
+  // manual board Reset, then on to the next throw: Autodarts still waits on the same full turn (3 darts, stuck takeout)
+  // -> the app's own Next (POST players/next, Space in the app); the visit goes to DartCounter
+  const full = real({ round: 2, gameScores: [441], turns: [{ round: 2, playerId: "p1", throws: [R("f1", 20, 1), R("f2", 20, 1), R("f3", 20, 1)] }] });
+  const nextTurn = real({ round: 3, gameScores: [441], turns: [{ round: 3, playerId: "p1", throws: [] }] });
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, (m, p) => {
+      if (m === "POST" && p === "/matches/m1/players/next") { setTimeout(() => pg.send(nextTurn), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    const bm = boardManager(pg.w);
+    await sleep(1800);
+    pg.send(real({}));
+    pg.send(full);
+    await sleep(300);
+    store.set("ad2dc3_board_cmd", { id: "dc-man2", ts: Date.now(), what: "reset ręczny", v: "3.6.0", base: "http://127.0.0.1:3180", manual: true });
+    await sleep(8000);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("manual: stuck full turn -> board Reset, then POST players/next (the app's Next), ack ok", bm.reqs.some(r => r.m === "POST") &&
+      pg.calls.join("|") === "POST /matches/m1/players/next" && ba.state === "ok" && /Dalej.*nast\u0119pna tura/.test(ba.how), { calls: pg.calls, ba });
+    check("manual: the full turn goes to DartCounter after Next", visits(store).some(v => v.labels === "S20 S20 S20"), visits(store));
+  }
+  // Autodarts moves on by itself after the board Reset -> no Next
+  {
+    const store = makeStore();
+    let pg;
+    pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    const bm = boardManager(pg.w);
+    bm.onReset = () => setTimeout(() => pg.send(nextTurn), 300);
+    await sleep(1800);
+    pg.send(real({}));
+    pg.send(full);
+    await sleep(300);
+    store.set("ad2dc3_board_cmd", { id: "dc-man3", ts: Date.now(), what: "reset ręczny", v: "3.6.0", base: "http://127.0.0.1:3180", manual: true });
+    await sleep(6000);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("manual: Autodarts moved on by itself after the Reset -> no Next", pg.calls.length === 0 && ba.state === "ok" && /przeszed\u0142 do nast\u0119pnej tury sam/.test(ba.how), { calls: pg.calls, ba });
+  }
+  // a turn in progress (2 darts) goes on: no Next
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: true, status: 200 }));
+    boardManager(pg.w);
+    await sleep(1800);
+    pg.send(real({}));
+    pg.send(real({ round: 2, turns: [{ round: 2, playerId: "p1", throws: [R("g1", 20, 1), R("g2", 5, 1)] }] }));
+    await sleep(300);
+    store.set("ad2dc3_board_cmd", { id: "dc-man4", ts: Date.now(), what: "reset ręczny", v: "3.6.0", base: "http://127.0.0.1:3180", manual: true });
+    await sleep(6000);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("manual: turn in progress (2 darts) -> no Next, ack ok", pg.calls.length === 0 && ba.state === "ok" && /tura w toku \(2 z 3/.test(ba.how), { calls: pg.calls, ba });
+  }
+  // Next refused by Autodarts -> fail with the reason (red in DartCounter)
+  {
+    const store = makeStore();
+    const pg = makePlay(store, () => ({ ok: false, status: 403, err: "HTTP 403 forbidden" }));
+    boardManager(pg.w);
+    await sleep(1800);
+    pg.send(real({}));
+    pg.send(full);
+    await sleep(300);
+    store.set("ad2dc3_board_cmd", { id: "dc-man5", ts: Date.now(), what: "reset ręczny", v: "3.6.0", base: "http://127.0.0.1:3180", manual: true });
+    await sleep(6500);
+    const ba = store.get("ad2dc3_board_ack") || {};
+    check("manual: Next refused -> ack fail with the HTTP answer", ba.state === "fail" && /Dalej\u201d nie wyszed\u0142: POST \/matches\/m1\/players\/next \u2192 HTTP 403/.test(ba.how), ba);
   }
 
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");

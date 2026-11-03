@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.6.0
+
+- New: Cricket. An Autodarts Cricket game is entered into DartCounter's "Cricket / Tactics" (local match) dart by dart, like X01 and Around the Clock.
+  - Keys 15-20 and bull as single, double or treble (`20`, `D20`, `T20` ... `SBULL` = 25, `BULL` = 50), then "Submit". Each dart is checked in DartCounter's score input before the turn is submitted.
+  - DartCounter counts marks, closed fields and points. Darts outside the game (1-14, misses) and darts on a field everybody has closed (DartCounter disables that key) are left out, so DartCounter counts them as misses. A turn without a dart in the game is submitted empty.
+  - Corrections made in the Autodarts game before the end of the turn are in the result, like in X01.
+  - Settings: Autodarts game mode Cricket / Tactics must match DartCounter's mode Cricket / Tactics. The scoring (Standard / Cut Throat / No Score) must match when Autodarts plays 2+ players; Autodarts alone only gives the darts and DartCounter counts the points (DartCounter itself uses its scoring only with 2+ players). Hidden Cricket does not exist in DartCounter. Any mismatch: the visit is not entered, with the reason in the panel ("Niewpisane tury") and in the console.
+  - Start and end: a won Autodarts Cricket leg goes on to the next leg by itself (like X01). A DartCounter Cricket leg end (the legs counter goes up) sends the reset order for Cricket: the game tab takes the Autodarts leg back to its start with the app's Undo (`games/restart`, then a new match as fallbacks), with the same answer and retry as X01. Won or lost = whose legs counter went up, compared with the player the visits are entered for.
+  - Board Reset after every Cricket leg, like X01 (button "Reset tarczy po legu").
+  - Panel: "Strona meczu: TAK (Cricket / Tactics)" and a row with DartCounter's Cricket settings.
+- New: manual board Reset, for a board that stays in takeout after the darts are pulled (orange in Autodarts instead of green, no darts counted). Button "Reset tarczy" on top of the DartCounter overlay (next to the pill and the speaker, also with the panel closed) and the shortcut Alt+Shift+R.
+  - The shortcut does nothing while typing in a field (also DartCounter's own fields, whose input sits inside the field's shadow DOM). DartCounter's own keys (digits, Enter, Backspace, Ctrl+Z, Ctrl+Enter, arrows, F11) have no Alt+Shift.
+  - The same Reset as "Reset" in Autodarts Desktop (key R in the Autodarts game): local Board Manager first (`POST 127.0.0.1:3180/api/reset`, the "Adres API" address), the cloud board service (game tab) as fallback. Never a calibration.
+  - Runs at once, without waiting for the takeout, also when the board state cannot be read and also with "Reset tarczy po legu" off.
+  - Then on to the next throw: when Autodarts still waits on the same full turn (3 darts, or a bust) 3 s after the Reset, the game tab uses the app's own "Next" (`POST /matches/{id}/players/next`, Space / Enter in the Autodarts game), so that turn goes to DartCounter. A turn in progress (1-2 darts) goes on; nothing is done when Autodarts moved on by itself, when the leg is over or while a leg reset runs.
+  - Result: the button shows "Reset tarczy..." while it runs, then a check mark (green) or a cross (red), with a note under it: green "tarcza gotowa" (and the Next step), or red with the reason. A failure is also a red error in the panel. Board state before and after in the log and in the panel row "Reset tarczy". A second click while it runs does nothing.
+  - No automatic reset after N seconds in takeout: left out on purpose. Autodarts gives no reliable signal that the darts are out of the board: a board stuck in takeout and a player still pulling the darts look the same (status "Takeout", the darts of the turn still listed), so a timer could reset the board or move on while darts are still in it and skip a round. The reset stays a decision of the player (button or shortcut).
+- Reset orders name their game (X01, Around the Clock, Cricket). The game tab refuses an order when Autodarts plays another game, with a clear message in the DartCounter panel.
+- Tests: Cricket logic, a DartCounter Cricket page in jsdom (built from the real page's markup), the game tab with Cricket orders and the manual board Reset (full turn stuck -> Next, Autodarts moving on by itself, turn in progress, Next refused), the button, its notes and the shortcut guard, and a browser scenario (WebKit and Chromium): Cricket visits, lost leg, Undo in Autodarts, board Reset, then a full turn stuck in takeout freed by the button.
+- Checked on the real app.dartcounter.net (guest account, local Cricket with Standard scoring vs DartBot and alone) in WebKit and Chromium, with a simulated Autodarts game tab and Board Manager: entry dart by dart, misses, closed fields, lost and won leg, Undo / next leg in Autodarts, board Reset, and a full turn stuck in takeout freed by the button (Reset, then Next, then the turn in DartCounter). X01 lost leg and Around the Clock 25 on the bull checked again the same way. Not checked with a real board, a real Board Manager or a real Autodarts account.
+- X01 and Around the Clock entry unchanged.
+
 ## 3.5.6
 
 - Fix (Around the Clock): the outer bull (25) on the bull target now becomes a miss in Autodarts, so Autodarts plays on to the bull like DartCounter ("Finish by hitting the bullseye").

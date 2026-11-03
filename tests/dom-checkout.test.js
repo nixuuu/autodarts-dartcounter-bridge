@@ -63,8 +63,8 @@ function makeDC(store, opts) {
   const w = dom.window, doc = w.document;
   w.Element.prototype.getClientRects = function () { return this.isConnected && !this.closest("[hidden]") ? [1] : []; };
   w.localStorage.setItem("inGameKeyboard", opts.mode === "darts" ? "single" : "numbers");
-  const g = { rest: [opts.rest || 501, opts.botRest || 501], turns: [], dialogs: [], darts: [], temp: null, busted: false, mult: 1,
-    legs: 0, won: [0, 0], botTurns: 0, warns: [], rejected: [], logs: [] };
+  const g = { rest: [opts.rest || 501, opts.cpuRest || 501], turns: [], dialogs: [], darts: [], temp: null, busted: false, mult: 1,
+    legs: 0, won: [0, 0], cpuTurns: 0, warns: [], rejected: [], logs: [] };
   const render = () => { doc.getElementById("r0").textContent = String(g.rest[0]); doc.getElementById("r1").textContent = String(g.rest[1]); };
   render();
 
@@ -83,8 +83,8 @@ function makeDC(store, opts) {
   function dartbotTurn() {
     remove();
     setTimeout(() => {
-      g.botTurns++;
-      if (opts.botFinishOn && g.botTurns === opts.botFinishOn) { g.rest[1] = 0; render(); setTimeout(() => { newLeg(1); add(); }, 200); return; }
+      g.cpuTurns++;
+      if (opts.cpuFinishOn && g.cpuTurns === opts.cpuFinishOn) { g.rest[1] = 0; render(); setTimeout(() => { newLeg(1); add(); }, 200); return; }
       g.rest[1] -= 45; render(); add();
     }, 900);
   }
@@ -303,7 +303,7 @@ async function scenario(mode, rest, visits, opts) {
 
   // lost leg: DartBot checks out -> reset order with won = false; setting "only after a lost leg"
   {
-    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, resetMode: "lost" });
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { cpuRest: 100, cpuFinishOn: 1, resetMode: "lost" });
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
     check("lost leg (DartBot checkout) -> reset order, won = false", cmd && cmd.kind === "leg" && cmd.won === false, cmd);
@@ -317,12 +317,12 @@ async function scenario(mode, rest, visits, opts) {
     s.p.openPanel();
     await sleep(700);
     check("reset ack ok -> panel row with the result", /Reset Autodarts.*✓ leg od nowa/.test(s.p.panel().rows), s.p.panel().rows);
-    check("board ack ok -> panel row 'Reset tarczy' with the result", /Reset tarczy.*po ka\u017cdym legu X01.*\u2713 karta gry: lokalnie: POST 127\.0\.0\.1:3180\/api\/reset/.test(s.p.panel().rows), s.p.panel().rows);
+    check("board ack ok -> panel row 'Reset tarczy' with the result", /Reset tarczy.*po ka\u017cdym legu \(X01, Cricket\).*\u2713 karta gry: lokalnie: POST 127\.0\.0\.1:3180\/api\/reset/.test(s.p.panel().rows), s.p.panel().rows);
     s.stop();
   }
   // board Reset switched off -> no order
   {
-    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, boardReset: false });
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { cpuRest: 100, cpuFinishOn: 1, boardReset: false });
     await sleep(2500);
     check("board Reset off -> leg end gives no board order (reset order of Autodarts still sent)", !s.store.get("ad2dc3_board_cmd") && !!s.store.get("ad2dc3_reset_cmd"),
       { board: s.store.get("ad2dc3_board_cmd"), reset: s.store.get("ad2dc3_reset_cmd") });
@@ -381,7 +381,7 @@ async function scenario(mode, rest, visits, opts) {
 
   // 3.5.2: lost leg while DartCounter redraws the scoreboard between legs (scores gone for a moment)
   {
-    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, gapMs: 900 });
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { cpuRest: 100, cpuFinishOn: 1, gapMs: 900 });
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
     check("lost leg, scoreboard gone for 0.9 s between legs -> reset order, won = false", cmd && cmd.kind === "leg" && cmd.won === false, cmd);
@@ -393,7 +393,7 @@ async function scenario(mode, rest, visits, opts) {
 
   // 3.5.2: handicap (rests not equal at the new leg) -> the legs counter still shows the leg end
   {
-    const s = await scenario("sum", 501, ["S20 S20 S20"], { botRest: 100, botFinishOn: 1, handicap: 301 });
+    const s = await scenario("sum", 501, ["S20 S20 S20"], { cpuRest: 100, cpuFinishOn: 1, handicap: 301 });
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
     check("lost leg with a handicap start (501/301) -> legs counter gives the leg end, reset order", cmd && cmd.won === false, { cmd, logs: s.p.g.logs.filter(l => /leg/i.test(l)) });

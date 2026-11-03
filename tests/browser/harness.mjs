@@ -87,13 +87,17 @@ export function createAutodarts({ variant = "X01", baseScore = 501 } = {}) {
     return { name: s, number: Number(m[2]), bed: ["", "SingleOuter", "Double", "Triple"][mult], multiplier: mult };
   };
   const ad = { id: "m" + Date.now().toString(36), api: [], ws: null, undoMode: "ok", restartMode: "ok", patchMode: "reject", hist: [] };
+  const CR = [20, 19, 18, 17, 16, 15, 25];
+  const crState = () => ({ segments: [CR.map(() => 0)] });
   const atcTargets = () => { const t = []; for (let n = 1; n <= 20; n++) t.push({ number: n, bed: "Full", hits: 0, count: 0 }); t.push({ number: 25, bed: "Full", hits: 0, count: 0 }); return [t]; };
   const turn = round => ({ id: "turn" + (++seq), playerId: "p1", round, throws: [], points: 0, busted: false });
   ad.m = {
     id: ad.id, variant, type: "Local", players: [{ id: "p1", name: "Ja", userId: "u1", boardId: "b1", cpuPPR: null, index: 0 }],
-    settings: variant === "ATC" ? { mode: "Full", order: "1-20-Bull", hits: 1 } : { baseScore, inMode: "Straight", outMode: "Double", bullMode: "25/50", maxRounds: 50 },
+    settings: variant === "ATC" ? { mode: "Full", order: "1-20-Bull", hits: 1 } : variant === "Cricket" ? { gameMode: "Cricket", scoringMode: "Standard", maxRounds: 50 }
+      : { baseScore, inMode: "Straight", outMode: "Double", bullMode: "25/50", maxRounds: 50 },
     set: 1, leg: 1, round: 1, player: 0, legs: null, sets: null, finished: false, gameFinished: false, winner: -1, scores: null,
-    gameScores: [variant === "ATC" ? 0 : baseScore], turns: [turn(1)], state: variant === "ATC" ? { targets: atcTargets(), currentTargets: [0] } : {}
+    gameScores: [variant === "X01" ? baseScore : 0], turns: [turn(1)], gameWinner: -1,
+    state: variant === "ATC" ? { targets: atcTargets(), currentTargets: [0] } : variant === "Cricket" ? crState() : {}
   };
   const snap = () => ad.hist.push(JSON.parse(JSON.stringify(ad.m)));
   ad.send = () => { if (ad.ws) ad.ws.send(JSON.stringify({ channel: "autodarts.matches", topic: ad.id + ".state", data: ad.m })); };
@@ -101,7 +105,11 @@ export function createAutodarts({ variant = "X01", baseScore = 501 } = {}) {
     snap();
     const t = { id: "t" + (++seq), segment: seg(label), coords: { x: 0.1, y: -0.2 }, type: "normal" }, s = t.segment, m = ad.m;
     m.turns[0].throws.push(t);
-    if (variant === "X01") {
+    if (variant === "Cricket") {
+      const i = CR.indexOf(s.number);
+      if (i >= 0 && s.multiplier > 0) m.state.segments[0][i] += s.multiplier;
+      if (m.state.segments[0].every(x => x >= 3)) { m.gameWinner = 0; m.gameFinished = true; m.winner = 0; }
+    } else if (variant === "X01") {
       const rest = m.gameScores[0] - s.number * s.multiplier;
       if (rest === 0 && s.multiplier === 2) { m.gameScores[0] = 0; m.gameFinished = m.finished = true; m.winner = 0; } else if (rest >= 2) m.gameScores[0] = rest;
     } else {
@@ -116,12 +124,13 @@ export function createAutodarts({ variant = "X01", baseScore = 501 } = {}) {
     ad.send();
   };
   ad.takeout = () => { if (ad.m.finished || ad.m.gameFinished) return; snap(); ad.m.round++; ad.m.turns = [turn(ad.m.round)]; ad.send(); };
-  ad.visit = async (labels, gap = 150) => { for (const l of labels) { ad.dart(l); await sleep(gap); } await sleep(250); ad.takeout(); };
+  ad.visit = async (labels, gap = 150, stuck = false) => { for (const l of labels) { ad.dart(l); await sleep(gap); } await sleep(250); if (!stuck) ad.takeout(); }; // stuck: takeout never ends
   const fresh = nextLeg => {
     ad.hist = [];
-    Object.assign(ad.m, { round: 1, finished: false, gameFinished: false, winner: -1, gameScores: [variant === "ATC" ? 0 : baseScore], turns: [turn(1)] });
+    Object.assign(ad.m, { round: 1, finished: false, gameFinished: false, winner: -1, gameWinner: -1, gameScores: [variant === "X01" ? baseScore : 0], turns: [turn(1)] });
     if (nextLeg) ad.m.leg++;
     if (variant === "ATC") ad.m.state = { targets: atcTargets(), currentTargets: [0] };
+    if (variant === "Cricket") ad.m.state = crState();
   };
   ad.route = async page => {
     await page.route(AD + "/**", r => new URL(r.request().url()).pathname === "/assets/src-T1.js"
@@ -135,6 +144,7 @@ export function createAutodarts({ variant = "X01", baseScore = 501 } = {}) {
       let status = 200;
       if (path === `/matches/${id}/undo`) { if (ad.undoMode === "ok" && ad.hist.length) { ad.m = ad.hist.pop(); setTimeout(ad.send, 40); } else status = 400; }
       else if (path === `/matches/${id}/games/restart`) { if (ad.restartMode === "ok") { fresh(false); setTimeout(ad.send, 80); } else status = 404; }
+      else if (path === `/matches/${id}/players/next`) { if (!(ad.m.finished || ad.m.gameFinished)) { ad.takeout(); } else status = 400; } // the app's Next (Space)
       else if (path === `/matches/${id}/games/next`) { if (ad.m.finished || ad.m.gameFinished) { fresh(true); setTimeout(ad.send, 80); } else status = 400; }
       else if (path === `/matches/${id}/throws` && req.method() === "PATCH") {
         ad.patchBody = req.postDataJSON();
@@ -234,9 +244,51 @@ window.__atc = G;
 render();
 </script></body></html>`;
 
+// Cricket / Tactics vs DartBot: markup of the real page (player boxes with "current-turn", .totalScore, legs counter,
+// app-cricket-tactics-keyboard with disabled keys for fields closed by everybody, score input with submit). The DartBot
+// closes fields quickly, so it wins the leg after a few turns (a lost leg for the player).
+const DC_CRICKET = `<!doctype html><html><head><meta charset="utf-8"><title>DartCounter</title></head><body><div id="game"></div>
+<script>
+localStorage.setItem("localCricketTacticsSettings", JSON.stringify({ mode: "cricket", scoring_type: "standard", showCutThroat: true, vsDartBot: true }));
+const F = [20, 19, 18, 17, 16, 15, 25];
+const team = name => ({ name, marks: Object.fromEntries(F.map(f => [f, 0])), points: 0, legs: 0 });
+const G = { teams: [team("guest_test"), team("DartBot")], cur: 0, throws: [], turns: [], busy: false };
+const plan = [[[20, 3], [19, 3], [18, 3]], [[17, 3], [16, 3], [15, 3]], [[25, 2], [25, 1]]];
+let cpuTurn = 0;
+const closedAll = f => G.teams.every(t => t.marks[f] >= 3);
+function hit(ti, f, m) { const t = G.teams[ti], o = G.teams[1 - ti], need = Math.max(0, 3 - t.marks[f]); t.marks[f] += m; const x = Math.max(0, m - need); if (x && o.marks[f] < 3) t.points += x * f; }
+const over = ti => F.every(f => G.teams[ti].marks[f] >= 3) && G.teams[ti].points >= G.teams[1 - ti].points;
+function newLeg(w) { G.teams[w].legs++; for (const t of G.teams) { t.points = 0; for (const f of F) t.marks[f] = 0; } cpuTurn = 0; }
+function submit() {
+  G.turns.push(G.throws.map(x => x.label)); for (const x of G.throws) hit(0, x.f, x.m); G.throws = [];
+  if (over(0)) newLeg(0);
+  G.cur = 1; G.busy = true; render();
+  setTimeout(() => { for (const [f, m] of (plan[cpuTurn++] || [])) hit(1, f, m); if (over(1)) newLeg(1); G.cur = 0; G.busy = false; render(); }, 600);
+}
+const key = (f, m) => f === 25 ? (m === 2 ? "BULL" : "SBULL") : ["", "", "D", "T"][m] + f;
+function render() {
+  const boxes = G.teams.map((t, i) => '<div class="player-box"><div class="player-container-user-details"><div class="details-wrapper' + (G.cur === i ? " current-turn" : "") + '"><div appingameplayername> ' + t.name + ' </div></div></div>' +
+    '<div class="web-scroll-container"><app-cricket-tactics-team-score><div dctypography="bulevar-80" class="totalScore"> ' + t.points + ' </div><app-in-game-interim-score orientation="vertical"><div class="flex flex-col"><div appingameinterimscoresize><span> ' + t.legs + ' </span></div></div></app-in-game-interim-score> Avg. MPR</app-cricket-tactics-team-score></div></div>').join("");
+  const keys = G.cur === 0 && !G.busy ? F.map(f => (f === 25 ? [1, 2] : [1, 2, 3]).map(m => '<button type="button" class="key"' + (closedAll(f) ? " disabled" : "") + ' data-f="' + f + '" data-m="' + m + '"> ' + key(f, m) + ' </button>').join("")).join("") : "";
+  const slots = G.throws.map(x => '<div class="relative flex"><div dctypography="bulevar-40"> ' + x.f * x.m + ' </div><div dctypography="geist-12-medium">' + x.label + '</div></div>').join("");
+  document.getElementById("game").innerHTML = '<app-cricket-tactics-local-game><app-cricket-tactics-local-large-layout>' + boxes +
+    '<app-cricket-tactics-score-input><app-keyboard-score-input>' + slots + '<button type="button" class="submit-button">Submit</button></app-keyboard-score-input></app-cricket-tactics-score-input>' +
+    '<app-cricket-tactics-keyboard>' + keys + '</app-cricket-tactics-keyboard></app-cricket-tactics-local-large-layout></app-cricket-tactics-local-game>';
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.classList.contains("submit-button")) { if (G.cur === 0 && !G.busy) submit(); return; }
+  if (!b.classList.contains("key") || b.disabled || G.throws.length >= 3) return;
+  const f = Number(b.dataset.f), m = Number(b.dataset.m);
+  G.throws.push({ f, m, label: (f === 25 ? (m === 2 ? "D" : "S") : ["", "S", "D", "T"][m]) + f }); render();
+});
+window.__cr = G;
+render();
+</script></body></html>`;
+
 export async function routeDartCounter(page) {
   await page.route("https://app.dartcounter.net/**", r => {
     const p = new URL(r.request().url()).pathname;
-    return r.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: p.startsWith("/game/around-the-clock") ? DC_ATC : DC_X01 });
+    return r.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: p.startsWith("/game/around-the-clock") ? DC_ATC : p.startsWith("/game/cricket-tactics") ? DC_CRICKET : DC_X01 });
   });
 }

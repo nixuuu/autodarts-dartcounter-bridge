@@ -8,6 +8,8 @@
 //    -> Undo on the 25; step 3 both refused -> the game tab starts the next Autodarts game. DartCounter always gets a
 //    Miss for the 25 and ends on 50. No click in DartCounter.
 // 3) The other tab runs another version: both panels say which tab to refresh.
+// 4) Cricket (3.6.0): darts in and out of play, a turn of misses, the DartBot wins the leg -> reset order for Cricket ->
+//    Undo in Autodarts -> board Reset (stuck takeout); then the manual "Reset tarczy" button on top of the overlay.
 import { webkit, chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
@@ -118,6 +120,56 @@ for (const [name, type] of [["webkit", webkit], ["chromium", chromium]]) {
     check(tag + " 50 ends the DartCounter game" + (mode.step < 3 ? " and the Autodarts game" : "") + ", nothing clicked by hand",
       g && g.done && g.log[g.log.length - 1] === "BULL" && (mode.step === 3 || ad.m.finished), { g: g || await atc(), adFinished: ad.m.finished });
     check(tag + " no page errors", !logs.some(l => /PAGEERROR/.test(l)), logs.filter(l => /PAGEERROR/.test(l)));
+    await ctx.close();
+  }
+
+  // 4) Cricket
+  {
+    const gm = createGM(), logs = [], ad = createAutodarts({ variant: "Cricket" });
+    gm.bm.state = { status: "Takeout", event: "Takeout started", numThrows: 3, throws: [{ segmentName: "S1", segmentNumber: 1, multiplier: 1 }] };
+    const { ctx, dc, game } = await tabs(browser, gm, logs);
+    await ad.route(game);
+    await game.goto(ad.url());
+    await dc.goto("https://app.dartcounter.net/game/cricket-tactics");
+    await until(() => has(logs, /AD Odbieram stan meczu/) && has(logs, /DC Ta karta DartCounter jest aktywna/), 8000);
+    const cr = () => dc.evaluate(() => ({ turns: window.__cr.turns.slice(), legs: window.__cr.teams.map(t => t.legs), mine: window.__cr.cur === 0 && !window.__cr.busy }));
+    const myTurn = () => until(async () => (await cr()).mine, 8000);
+    const turn = async (labels, n) => { await myTurn(); await ad.visit(labels); await until(async () => (await cr()).turns.length >= n, 8000); };
+    await turn(["T20", "S19", "S5"], 1);
+    await turn(["S3", "M", "S1"], 2);
+    await turn(["S17", "S17", "S17"], 3);
+    let c = await cr();
+    check(name + " Cricket: T20 S19 S5 -> T20 S19 (S5 not in play); misses -> empty turn; S17 x3", JSON.stringify(c.turns) === '[["T20","S19"],[],["S17","S17","S17"]]', c);
+    c = await until(async () => { const x = await cr(); return x.legs[1] === 1 ? x : null; }, 8000);
+    check(name + " Cricket: the DartBot won the DartCounter leg", c && c.legs.join("/") === "0/1", c || await cr());
+    const ack = await until(() => { const a = gm.get("ad2dc3_reset_ack"); return a && /^(ok|fail)$/.test(a.state) ? a : null; }, 15000);
+    const cmd = gm.get("ad2dc3_reset_cmd");
+    check(name + " Cricket: lost leg -> reset order for Cricket, Autodarts back at the leg start with Undo", cmd && cmd.game === "cricket" && cmd.won === false && ack && ack.state === "ok" && /Undo/.test(ack.how) &&
+      ad.m.round === 1 && ad.m.turns[0].throws.length === 0 && ad.m.state.segments[0].every(x => x === 0), { cmd, ack, round: ad.m.round, seg: ad.m.state.segments });
+    const ba = await until(() => { const a = gm.get("ad2dc3_board_ack"); return a && /^(ok|fail|skipped)$/.test(a.state) ? a : null; }, 20000);
+    check(name + " Cricket: board Reset after the leg (stuck takeout)", ba && ba.state === "ok" && /zawieszone/.test(ba.how) && gm.bm.reqs.filter(r => r.method === "POST").length === 1, ba);
+    // manual Reset: the button on top of the overlay (the leg's board Reset shows its check mark for 6 s)
+    await sleep(6500);
+    const label = () => dc.evaluate(() => { const b = document.getElementById("ad2dc-root").shadowRoot.getElementById("act"); return b && !b.hidden ? b.textContent : null; });
+    check(name + " manual: 'Reset tarczy' button visible on top of the overlay", (await label()) === "Reset tarczy", await label());
+    // the player's full turn stays on the board: Autodarts never sees the takeout end (orange board), nothing goes out
+    await myTurn();
+    const n0 = (await cr()).turns.length;
+    await ad.visit(["T20", "T19", "M"], 150, true);
+    gm.bm.state = { status: "Takeout", event: "Takeout started", numThrows: 3 };
+    await sleep(1500);
+    check(name + " manual: stuck full turn -> nothing entered yet", (await cr()).turns.length === n0, await cr());
+    const t0 = Date.now();
+    await dc.evaluate(() => document.getElementById("ad2dc-root").shadowRoot.getElementById("act").click());
+    const ok = await until(async () => /✓/.test(await label() || ""), 12000);
+    const posts = gm.bm.reqs.filter(r => r.method === "POST");
+    const note = await dc.evaluate(() => { const m = document.getElementById("ad2dc-root").shadowRoot.getElementById("actmsg"); return m && !m.hidden ? m.textContent : null; });
+    check(name + " manual: click -> board Reset at once (POST 127.0.0.1:3180/api/reset), then the app's Next, button 'Reset tarczy ✓' + green note", ok && posts.length === 2 && posts[1].t - t0 < 3000 &&
+      ad.api.some(x => /^POST \/matches\/\{id\}\/players\/next 200$/.test(x)) && /tarcza gotowa\. „Dalej”/.test(note || "") &&
+      has(logs, /DC Reset tarczy ✓ karta gry: przed: wyjmowanie lotek .*reset ręczny/), { posts, label: await label(), note, api: ad.api.slice(-3), logs: logs.filter(l => /tarczy/.test(l)).slice(-4) });
+    const entered = await until(async () => { const x = await cr(); return x.turns.length > n0 ? x : null; }, 8000);
+    check(name + " manual: after Next the turn goes to DartCounter (T20 T19, miss left out)", entered && JSON.stringify(entered.turns[entered.turns.length - 1]) === '["T20","T19"]', entered || await cr());
+    check(name + " Cricket: no page errors", !logs.some(l => /PAGEERROR/.test(l)), logs.filter(l => /PAGEERROR/.test(l)));
     await ctx.close();
   }
 

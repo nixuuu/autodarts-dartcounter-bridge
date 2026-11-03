@@ -4,7 +4,9 @@ Userscript (Tampermonkey) that takes the darts detected by [Autodarts](https://a
 
 Userscript dla Tampermonkey. Bierze lotki rozpoznane przez Autodarts i sam wpisuje turę do DartCounter. Wpis idzie **raz na turę**, dopiero **gdy tura się skończy** (wyjęcie lotek albo następna tura).
 
-Wersja: **3.5.0**. Zmiany: [CHANGELOG.md](CHANGELOG.md).
+Gry: **X01**, **Around the Clock** i (od 3.6.0) **Cricket**.
+
+Wersja: **3.6.0**. Zmiany: [CHANGELOG.md](CHANGELOG.md).
 
 ## Instalacja
 
@@ -22,8 +24,8 @@ Tampermonkey sam sprawdza aktualizacje (`@updateURL`).
 ### Gra Autodarts (domyślnie, zalecane)
 
 1. Włącz Autodarts Desktop (albo board) z kamerami.
-2. **Karta 1:** https://play.autodarts.com → gra **X01** sam ze sobą, ze swoją tarczą w lobby. Po starcie gry odśwież kartę raz (Cmd+R / F5).
-3. **Karta 2:** https://app.dartcounter.net → mecz X01.
+2. **Karta 1:** https://play.autodarts.com → gra **X01**, **Around the Clock** albo **Cricket** sam ze sobą, ze swoją tarczą w lobby. Po starcie gry odśwież kartę raz (Cmd+R / F5).
+3. **Karta 2:** https://app.dartcounter.net → ta sama gra (mecz X01, Around the Clock albo Cricket / Tactics).
 4. Najlepiej dwa osobne okna obok siebie (przeglądarki spowalniają karty w tle).
 
 Skrypt czyta stan meczu z WebSocketu strony gry (kanał `autodarts.matches`). **Poprawki lotek zrobione w grze Autodarts** przed końcem tury trafiają do wyniku. Tura idzie do DartCounter, gdy Autodarts przejdzie do następnej tury albo skończy lega.
@@ -79,6 +81,37 @@ Bez wpisu (z czytelnym błędem w panelu i w konsoli):
 - gra Autodarts inna niż otwarta w DartCounter (X01 przy otwartym Around the Clock i odwrotnie).
 
 Źródło lokalne (`/api/state`, bez ustawień gry z Autodarts) też działa: lotki idą do Around the Clock, decyduje DartCounter.
+
+## Cricket (od 3.6.0)
+
+Gra **Cricket** w Autodarts trafia do gry **Cricket / Tactics** w DartCounter (Graj lokalnie → Cricket / Tactics), lotka po lotce. Pola w grze: 15–20 i bull (Tactics: 10–20 i bull).
+
+Ustawienia (muszą być takie same po obu stronach):
+
+| Autodarts (Cricket) | DartCounter (Cricket / Tactics) |
+|---|---|
+| Game mode **Cricket** | Mode **Cricket** |
+| Game mode **Tactics** | Mode **Tactics** |
+| Game mode **Hidden Cricket** | brak w DartCounterze → tura nie jest wpisana, ostrzeżenie |
+| Scoring **Standard** / **Cut Throat** / **No Score** | punktacja **Standard** / **Cut throat** / **No score** |
+
+- Punktację sprawdza skrypt tylko wtedy, gdy Autodarts gra w 2+ graczy. Grasz w Autodarts sam ze sobą (zalecane): Autodarts podaje tylko lotki, a punkty i zamknięcia liczy DartCounter. DartCounter sam liczy punktację tylko przy 2+ graczach (z DartBotem też); przy jednym graczu zawsze Standard.
+- Inna gra lub inne ustawienia: tura nie jest wpisana, panel pokazuje powód w wierszu „Niewpisane tury”, w konsoli jest `[AD2DC] BŁĄD wpisu`.
+- Adres strony: `app.dartcounter.net/game/cricket-tactics`. Panel AD2DC pokazuje „Strona meczu: TAK (Cricket / Tactics)” i wiersz z ustawieniami DartCountera.
+
+Jak to działa:
+
+- Po każdej turze z Autodarts skrypt klika w DartCounterze przycisk każdej lotki: `20`, `D20`, `T20` … `15`, `D15`, `T15`, `SBULL` (25), `BULL` (50). Sprawdza każdą lotkę w polu wyniku DartCountera, potem klika **Submit**.
+- Lotka poza grą (1–14, pudło) jest pomijana: DartCounter liczy ją jako pudło. Tak samo lotka w polu, które zamknęli już wszyscy gracze (DartCounter wyłącza wtedy ten przycisk). Tura bez żadnej lotki w grze idzie jako pusta tura (sam **Submit**, trzy pudła).
+- Zamknięcia i punkty liczy **DartCounter**. Poprawki lotek w grze Autodarts przed końcem tury trafiają do wyniku, jak w X01.
+- Gdy grasz z DartBotem, wpis czeka, aż DartBot skończy turę.
+
+Koniec lega i gry:
+
+- Wygrany leg w Autodarts (Autodarts ogłasza zwycięzcę lega; grając samemu: wszystkie pola zamknięte) → karta gry sama przechodzi w Autodarts do kolejnego lega, jak po wygranym legu X01.
+- Koniec lega w DartCounterze (licznik legów + 1) → polecenie resetu dla gry **Cricket**: karta gry cofa leg w Autodarts do startu przyciskiem **Undo** aplikacji (zapasy: `games/restart`, nowy mecz), z potwierdzeniem i ponawianiem jak w X01. Wygrany czy przegrany: decyduje, czyj licznik legów wzrósł, w porównaniu z graczem, do którego idą Twoje tury.
+- Po każdym legu Cricket: reset tarczy, jak w X01 (przycisk „Reset tarczy po legu”).
+- Karta gry odrzuca polecenie dla innej gry, niż gra Autodarts (np. polecenie Cricket przy X01), z komunikatem w panelu.
 
 ## Fajerwerki przy bullseye (od 3.4.0, tylko 50 od 3.4.1)
 
@@ -139,7 +172,7 @@ Wszystkie pliki są CC0 1.0 (bez wymogu podania autora; podany dla porządku). Z
 
 ## Reset gry w Autodarts (od 3.5.1)
 
-Gdy w DartCounterze kończy się leg (albo cały mecz), karta gry Autodarts od razu zaczyna X01 od początkowego wyniku. Dzięki temu gra w Autodarts nie kończy tur ani lega wcześniej niż DartCounter.
+Gdy w DartCounterze kończy się leg (albo cały mecz), karta gry Autodarts od razu zaczyna grę od nowa: X01 od początkowego wyniku, Cricket (od 3.6.0) od pustych pól. Dzięki temu gra w Autodarts nie kończy tur ani lega wcześniej niż DartCounter.
 
 Przycisk **„Reset Autodarts”** w panelu przełącza tryb:
 
@@ -163,15 +196,27 @@ Jak to działa:
 - Po wygranym legu (od 3.5.4): gdy Twoja tura zakończy leg w Autodarts (wynik 0), Autodarts sam przechodzi do kolejnego lega, 2,5 s po wysłaniu tury do DartCountera. Gdy mecz w Autodarts się skończył, zaczyna nowy. Działa niezależnie od DartCountera, wyłącza go tylko „Reset Autodarts: wyłączony”. Wynik jest w wierszu „Reset Autodarts” w panelu DartCountera.
 - Lotki tury w toku nigdy nie przepadają. Gdy w Autodarts są już lotki nowej tury, reset czeka, aż ta tura trafi do DartCountera.
 - Tury po resecie dostają nowe ID, więc nie są odrzucane jako duplikaty.
-- Gdy reset się nie uda (brak karty gry, brak logowania, Autodarts odmówi), panel DartCountera pokazuje czerwony komunikat. Wtedy zacznij nową grę X01 w Autodarts ręcznie. Tury dalej się wpisują.
-- Reset tarczy po legu (od 3.5.6, przycisk **„Reset tarczy po legu”**, domyślnie TAK): po każdym legu X01, wygranym i przegranym, tarcza w Autodarts dostaje „Reset”, ten sam co przycisk „Reset” w Autodarts Desktop i klawisz R w grze. Po legu tarcza potrafi zostać w stanie wyjmowania lotek (żółta ramka w Autodarts Desktop) i przestaje liczyć. Skrypt czeka najpierw na reset lega w Autodarts, potem do 6 s na wyjęcie lotek. Gdy tarcza jest gotowa albo dalej „żółta”, robi Reset: najpierw w lokalnym Board Managerze (`POST http://127.0.0.1:3180/api/reset`, adres z przycisku „Adres API”), a gdy ten nie odpowiada, przez chmurę Autodarts (z karty gry). Nigdy w trakcie rzucania (lotki tury w tarczy) i nigdy kalibracja. Stan tarczy przed i po resecie jest w logu, wynik w wierszu „Reset tarczy” w panelu.
+- Gdy reset się nie uda (brak karty gry, brak logowania, Autodarts odmówi, w Autodarts trwa inna gra), panel DartCountera pokazuje czerwony komunikat. Wtedy zacznij nową grę w Autodarts ręcznie. Tury dalej się wpisują.
+- Reset tarczy po legu (od 3.5.6, przycisk **„Reset tarczy po legu”**, domyślnie TAK): po każdym legu X01 i (od 3.6.0) Cricket, wygranym i przegranym, tarcza w Autodarts dostaje „Reset”, ten sam co przycisk „Reset” w Autodarts Desktop i klawisz R w grze. Po legu tarcza potrafi zostać w stanie wyjmowania lotek (żółta ramka w Autodarts Desktop) i przestaje liczyć. Skrypt czeka najpierw na reset lega w Autodarts, potem do 6 s na wyjęcie lotek. Gdy tarcza jest gotowa albo dalej „żółta”, robi Reset: najpierw w lokalnym Board Managerze (`POST http://127.0.0.1:3180/api/reset`, adres z przycisku „Adres API”), a gdy ten nie odpowiada, przez chmurę Autodarts (z karty gry). Nigdy w trakcie rzucania (lotki tury w tarczy) i nigdy kalibracja. Stan tarczy przed i po resecie jest w logu, wynik w wierszu „Reset tarczy” w panelu.
 - Najmniej kroków daje gra w Autodarts z wyłączonym „Match mode” (bez legów i setów): mecz nigdy nie kończy się sam.
+
+## Ręczny reset tarczy (od 3.6.0)
+
+Na wypadek, gdy po wyjęciu lotek tarcza w Autodarts dalej świeci na pomarańczowo (zamiast na zielono) i nie liczy lotek: Autodarts nie zauważył końca wyjmowania lotek i został w tym stanie.
+
+Przycisk **„Reset tarczy”** (bursztynowy) stoi na wierzchu nakładki DartCountera, obok kółka AD2DC i głośnika. Widać go zawsze, także przy zwiniętym panelu. Skrót klawiszowy: **Alt+Shift+R**. Skrót nie działa, gdy piszesz w polu tekstowym (także w polach DartCountera), i nie koliduje ze skrótami DartCountera (cyfry, Enter, Backspace, Ctrl+Z, Ctrl+Enter, strzałki, F11).
+
+- Robi to samo co „Reset” w Autodarts Desktop i klawisz R w grze Autodarts: najpierw lokalny Board Manager (`POST http://127.0.0.1:3180/api/reset`, adres z przycisku „Adres API”), a gdy ten nie odpowiada, chmura Autodarts (z karty gry). Nigdy kalibracja.
+- Działa od razu, bez czekania na wyjęcie lotek, także gdy stanu tarczy nie da się odczytać i także przy „Reset tarczy po legu: NIE”.
+- Potem przejście do następnego rzutu: gdy 3 s po resecie Autodarts dalej stoi na tej samej pełnej turze (3 lotki albo przerzucenie), karta gry klika „Dalej” samej aplikacji (`POST /matches/{id}/players/next`, jak spacja w grze Autodarts). Ta tura idzie wtedy do DartCountera. Tura w toku (1–2 lotki) trwa dalej. Nic więcej się nie dzieje, gdy Autodarts sam przeszedł dalej, gdy leg jest skończony albo gdy trwa reset lega. Bez otwartej karty gry jest tylko reset tarczy.
+- Wynik: przycisk pokazuje „Reset tarczy…” w trakcie, potem „Reset tarczy ✓” (zielony) albo „Reset tarczy ✗” (czerwony). Pod przyciskiem pojawia się komunikat: zielony „tarcza gotowa” (z krokiem „Dalej”, jeśli był) albo czerwony z powodem. Błąd jest też czerwonym komunikatem w panelu. Szczegóły (stan tarczy przed i po) są w logu i w wierszu „Reset tarczy” w panelu. Drugie kliknięcie w trakcie resetu nic nie robi.
+- Automatycznego resetu po czasie (np. gdy tarcza za długo „wisi” w wyjmowaniu lotek) celowo nie ma. Autodarts nie daje pewnego sygnału, że lotek nie ma już w tarczy: tarcza „zawieszona” w wyjmowaniu lotek i gracz, który dopiero wyjmuje lotki, wyglądają tak samo (stan „Takeout”, lotki tury dalej na liście). Reset po czasie mógłby więc ruszyć tarczę albo grę, gdy lotki są jeszcze w tarczy, i przeskoczyć rundę. O resecie decyduje gracz (przycisk albo skrót).
 
 ## Panel AD2DC
 
 Małe kółko w prawym dolnym rogu (kliknij, żeby rozwinąć). Kolor kropki: zielony = działa, żółty = otwórz mecz / grę, czerwony = błąd, szary = most wyłączony.
 
-Obok kółka: przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test fajerwerków, Test dźwięku, suwak Głośność, Reset Autodarts, Reset tarczy po legu, Wyczyść niewpisane, Opóźnienie, Zwiń.
+Obok kółka: przycisk **Reset tarczy** (od 3.6.0, patrz wyżej) i przycisk głośnika (dźwięki i fajerwerki wł./wył.). Przyciski w panelu: Włącz/Wyłącz most, Źródło, Wpis, Kopiuj log, Kopiuj surowy stan, Adres API, Double out, Test fajerwerków, Test dźwięku, suwak Głośność, Reset Autodarts, Reset tarczy po legu, Wyczyść niewpisane, Opóźnienie, Zwiń.
 
 Wiersz **„Karta gry”** (DartCounter) i **„Karta DartCounter”** (karta gry), od 3.5.5: obie karty co sekundę wysyłają sygnał życia ze swoim numerem wersji. Gdy druga karta ma inną wersję, panel pisze np. „Karta gry ma starszą wersję (sprzed 3.5.5), ta karta 3.5.5. Odśwież kartę gry (Cmd+R)”, a kółko pokazuje „odśwież kartę gry”. Gdy sygnału nie ma od 15 s, panel pisze „brak sygnału (karta w tle?)”, a po ponad 90 s „ZAMKNIĘTA”.
 
@@ -200,7 +245,8 @@ Wiersz **„Niewpisane tury”** (od 3.5.1) pokazuje każdą turę, której nie 
 - Klawiatura DartCounter z klikaną tarczą („dartboard”) nie jest obsługiwana w trybie lotka po lotce.
 - Przy źródle lokalnym w Autodarts v2+ lokalne API może zależeć od wersji Board Managera.
 - Around the Clock: obsługiwany tylko wariant 1 → 20 + bull (patrz sekcja „Around the Clock”); klawiatura DartCounter z klikaną tarczą i Omni nie są obsługiwane.
-- Reset Autodarts korzysta z API gry Autodarts (te same wywołania co aplikacja: Undo, „Dalej”, „Zagraj ponownie”). Nie dało się go sprawdzić na prawdziwym koncie Autodarts. Strona DartCountera jest sprawdzona na prawdziwym app.dartcounter.net (konto gościa, mecz lokalny z DartBotem i Around the Clock), karta gry na atrapie serwera Autodarts, w silnikach WebKit i Chromium. `games/restart` jest w kliencie API aplikacji, ale żaden przycisk aplikacji go nie używa, dlatego od 3.5.5 jest tylko zapasem. Korekta lotki w Around the Clock (format „bouncer”), Undo na 25 i reset tarczy (lokalny Board Manager `/api/reset`, chmura `/bs/v0/boards/{id}/reset`) są wzięte z kodu aplikacji Autodarts i z narzędzi, które ich używają; na prawdziwym koncie Autodarts nie były sprawdzone.
+- Cricket: tylko mecz lokalny w DartCounterze jest sprawdzony (prawdziwy app.dartcounter.net, konto gościa, Cricket ze standardową punktacją, z DartBotem). Tactics, Cut throat, No score i Cricket online (`/online-game/cricket-tactics`) są obsłużone według kodu DartCountera, ale nie były sprawdzone na żywo. Hidden Cricket z Autodarts nie ma odpowiednika w DartCounterze.
+- Reset Autodarts korzysta z API gry Autodarts (te same wywołania co aplikacja: Undo, „Dalej”, „Zagraj ponownie”). Nie dało się go sprawdzić na prawdziwym koncie Autodarts. Strona DartCountera jest sprawdzona na prawdziwym app.dartcounter.net (konto gościa, mecz lokalny z DartBotem i Around the Clock), karta gry na atrapie serwera Autodarts, w silnikach WebKit i Chromium. `games/restart` jest w kliencie API aplikacji, ale żaden przycisk aplikacji go nie używa, dlatego od 3.5.5 jest tylko zapasem. Korekta lotki w Around the Clock (format „bouncer”), Undo na 25, reset tarczy (lokalny Board Manager `/api/reset`, chmura `/bs/v0/boards/{id}/reset`) i „Dalej” po ręcznym resecie (`/players/next`, spacja w grze Autodarts) są wzięte z kodu aplikacji Autodarts i z narzędzi, które ich używają; na prawdziwym koncie Autodarts i prawdziwej tarczy nie były sprawdzone. Nie wiadomo też, czy sam „Manual reset” tarczy przesuwa grę Autodarts do następnej tury; dlatego skrypt sprawdza to po 3 s i dopiero wtedy klika „Dalej”.
 - Dźwięki wymagają jednego kliknięcia na stronie DartCounter po jej otwarciu (zasady autoodtwarzania) oraz dostępu do `raw.githubusercontent.com`.
 
 ## Testy
@@ -210,7 +256,7 @@ npm install
 npm test
 ```
 
-Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50, ustawienia i przyciski Around the Clock, cel ATC ze stanu gry, sygnał życia i wersja, stan meczu DartCountera z IndexedDB) oraz symulacje stron (jsdom): DartCounter X01 (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika), okno lotek DartCountera (zakończenie 1, 2 i 3 lotkami, przerzucenie, kolejka po oknie), koniec lega i meczu z poleceniem resetu i ponawianiem, DartCounter Around the Clock i karta gry Autodarts (reset: Undo do startu lega, lotka w trakcie cofania, `games/restart`, następny leg, nowy mecz, tura w toku, ponowione polecenie, ATC zakończone na 25, błędy).
+Testy logiki (parser, wykrywanie końca tury, decyzja o wyniku, dźwięki lotek i combo, wykrywanie bulla 25/50, ustawienia i przyciski Around the Clock, cel ATC ze stanu gry, ustawienia i przyciski Cricket, sygnał życia i wersja, stan meczu DartCountera z IndexedDB) oraz symulacje stron (jsdom): DartCounter X01 (oba sposoby wpisu, DartBot, przerzucenie, zakończenie, dźwięki, fajerwerki, przycisk głośnika), okno lotek DartCountera (zakończenie 1, 2 i 3 lotkami, przerzucenie, kolejka po oknie), koniec lega i meczu z poleceniem resetu i ponawianiem, DartCounter Around the Clock, DartCounter Cricket (lotki w grze i poza grą, pusta tura, pole zamknięte przez wszystkich, BULL/SBULL, inne ustawienia → bez wpisu, przegrany i wygrany leg, przycisk „Reset tarczy” i Alt+Shift+R) i karta gry Autodarts (reset: Undo do startu lega, lotka w trakcie cofania, `games/restart`, następny leg, nowy mecz, tura w toku, ponowione polecenie, ATC zakończone na 25, Cricket, polecenie dla innej gry, ręczny reset tarczy z „Dalej”, błędy).
 
 Testy w prawdziwych silnikach przeglądarek (WebKit jak Safari i Chromium), ze skryptem w osłonie jak w Tampermonkey (`window` to proxy, pamięć skryptu wspólna dla kart):
 
@@ -219,7 +265,7 @@ npx playwright install webkit chromium
 npm run test:browser
 ```
 
-Scenariusze: przegrany leg X01 (DartBot wygrywa leg → wykrycie końca lega → polecenie → potwierdzenie → Undo do startu lega → kolejna tura dalej trafia do DartCountera → reset tarczy, która „wisi” w wyjmowaniu lotek), Around the Clock z 25 na bullu w trzech wariantach (korekta przyjęta / Undo / nowa gra; DartCounter zawsze wpisuje Miss, 50 kończy grę) oraz ostrzeżenie o innej wersji drugiej karty. Atrapy stron są zbudowane z prawdziwego kodu HTML DartCountera i prawdziwego kształtu stanu gry Autodarts.
+Scenariusze: przegrany leg X01 (DartBot wygrywa leg → wykrycie końca lega → polecenie → potwierdzenie → Undo do startu lega → kolejna tura dalej trafia do DartCountera → reset tarczy, która „wisi” w wyjmowaniu lotek), Around the Clock z 25 na bullu w trzech wariantach (korekta przyjęta / Undo / nowa gra; DartCounter zawsze wpisuje Miss, 50 kończy grę), Cricket (lotki w grze i poza grą, pusta tura, przegrany leg → Undo w Autodarts → reset tarczy, potem tura z 3 lotkami „wisząca” w wyjmowaniu lotek → przycisk „Reset tarczy” → reset tarczy i „Dalej” → tura w DartCounterze) oraz ostrzeżenie o innej wersji drugiej karty. Atrapy stron są zbudowane z prawdziwego kodu HTML DartCountera i prawdziwego kształtu stanu gry Autodarts.
 
 ## Licencja
 
