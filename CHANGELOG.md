@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.6.1
+
+- Fix: after the last leg of a local match (e.g. a match lost against the DartBot) Autodarts was not reset. After "Rematch" it still showed the old game, not finished.
+  - Real cause, from DartCounter's app code: a local game (X01, Cricket, Around the Clock) ends by removing its saved match, opening the end screen and going back to the game's setup page (`/local-games/<game>`) at once. The end screen is on the setup page, not on the game page, and the last leg shows no new leg on the scoreboard. The script looked for the end screen only on the game page, so the end of a local match was never seen.
+  - Now the end screen on the setup page, right after the game page, is the end of the match: reset order for that game (X01, Cricket, Around the Clock), won or lost, with the same answer and retry as after a leg, and the board Reset.
+- Fix: DartCounter uses the same dialog for "Statistics" in the in-game menu (without "Rematch"). Up to 3.6.0, opening it in the middle of a local match counted as the end of the match and reset Autodarts. It never does now.
+- New: a new DartCounter game resets Autodarts like a lost leg: "Rematch", a game started from the setup page, or the DartCounter page opened at the start of a match.
+  - The new game is seen at the very start of the match for 1.5 s: X01 every rest at the start score and no leg won, Cricket every number 0, Around the Clock target 1.
+  - The game tab brings Autodarts to the start of a leg (Undo; `games/next` or a new match when the Autodarts game is over).
+  - Nothing happens when Autodarts is there already, when a turn of the new game is being thrown or already went to DartCounter, or with "Reset Autodarts: wyłączony" (every other setting resets for a new game).
+  - A match resumed in the middle is not a new game.
+- Around the Clock: the end of the DartCounter game now resets Autodarts too. Lost: the Autodarts game goes back to its start with Undo. Won, Autodarts finished on 50 too: next Autodarts game (`games/next`). Board Reset after the game.
+- Fix (Around the Clock): the game tab took the start of every Autodarts turn for the start of the game (no darts in the current turn). Now the start of the game is round 1 with no darts, and every target index at 0 when the state has them.
+- New: the whole camera picture in local games (button "Kamera: pełny kadr" in the panel, on by default). Same field of view as in Autodarts.
+  - Real cause, from DartCounter's app code: DartCounter asks the browser for the camera with `aspectRatio: { exact: 1 }`. The browser then cuts a square out of the middle of the camera picture before DartCounter gets it. "Zoom" is the camera's own zoom, so at its minimum it is still that square. DartCounter also shows the camera of a local game in a square box with `object-fit: cover`.
+  - On the pages of local games (`/local-games/...`, `/game/...`) a page script drops only that 1:1 request, so the camera sends its whole picture (e.g. 1280×720). Height (720), frame rate, chosen camera and zoom stay as DartCounter asks.
+  - The local game's camera box takes the camera's aspect ratio (as large as its place allows) with `object-fit: contain`. "Zoom" works as before.
+  - Online games, their cameras and every other page keep DartCounter's request and view.
+  - Takes effect when the camera is turned on ("Włącz kamerę") after the button is switched. Off: DartCounter's square again.
+- Tests: logic for the new game and the start of a match; DartCounter pages in jsdom with the real end of a local match (end screen on the setup page) for X01, Cricket and Around the Clock, won and lost, "Statistics" in the middle of a match, "Rematch", a match resumed in the middle; the game tab with new-game orders and the Around the Clock end; the camera button (local camera box, online camera untouched, button off).
+- X01, Around the Clock and Cricket entry unchanged.
+
 ## 3.6.0
 
 - New: Cricket. An Autodarts Cricket game is entered into DartCounter's "Cricket / Tactics" (local match) dart by dart, like X01 and Around the Clock.

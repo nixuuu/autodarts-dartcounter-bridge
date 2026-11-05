@@ -2,7 +2,7 @@
 // @name         AutoDarts -> DartCounter Bridge (debug edition)
 // @namespace    https://github.com/nixuuu
 // @author       nixuuu
-// @version      3.6.0
+// @version      3.6.1
 // @description  Reads AutoDarts visits (X01, Around the Clock and Cricket games on play.autodarts, after corrections; or the local Board API /api/state) and enters each visit once into app.dartcounter.net. Small debug panel with copyable log.
 // @match        https://app.dartcounter.net/*
 // @match        http://127.0.0.1/*
@@ -35,7 +35,29 @@
 // ==/UserScript==
 
 /*
- * AD2DC 3.6.0
+ * AD2DC 3.6.1
+ *
+ * 3.6.1 (end of a match, "Rematch", new game).
+ *   - Fix: the end of a local match was never seen, so Autodarts was not reset after the last leg (also not after
+ *     "Rematch") and kept the old game. Real cause (DartCounter app code): a local game (X01, Cricket, Around the Clock)
+ *     ends by removing its saved match, opening the end screen and going back to the setup page (/local-games/<game>)
+ *     at once; the script looked for the end screen only on the game page. The end screen is now taken on the setup
+ *     page right after the game page: order "match" for that game (X01, Cricket, Around the Clock), board Reset too.
+ *   - Fix: the same dialog on the game page is "Statistics" of the in-game menu (no "Rematch"); up to 3.6.0 opening it
+ *     in the middle of a local match counted as a match end and reset Autodarts. Never again.
+ *   - New: a new DartCounter game ("Rematch", a game started from the setup page, the page opened at the start of a
+ *     match) seen at the very start of the match (X01: every rest at the start score, no leg won; Cricket: all 0;
+ *     Around the Clock: target 1) for 1.5 s: order "new game", the game tab brings Autodarts to the start of a leg like
+ *     after a lost leg. Nothing when Autodarts is there already, when a turn of the new game is thrown or went out, or
+ *     with "Reset Autodarts: off". A match resumed in the middle is not a new game.
+ *   - Around the Clock: the end of the DartCounter game resets Autodarts too (lost: back to its start with Undo; won,
+ *     Autodarts finished on 50: next game).
+ *   - New, camera of a local game (button "Kamera: pelny kadr", default on): DartCounter asks the browser for the camera
+ *     with aspectRatio exact 1 (the browser cuts a square out of the middle of the picture; "Zoom" is the camera's zoom)
+ *     and shows it in a square box with object-fit cover. On the pages of local games the script drops that 1:1 request,
+ *     so the camera sends its whole picture, and shows all of it (object-fit contain, box in the camera's aspect ratio).
+ *     Online games and their cameras unchanged. Takes effect when the camera is turned on after the button.
+ *   - X01, Around the Clock and Cricket entry unchanged.
  *
  * 3.6.0 (Cricket, manual board Reset).
  *   - Cricket: an Autodarts Cricket game is entered into DartCounter's "Cricket / Tactics" (local match) dart by dart:
@@ -179,7 +201,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "3.6.0";
+  const VERSION = "3.6.1";
   const PREFIX = "[AD2DC]";
 
   // =====================================================================
@@ -708,11 +730,30 @@
       if (down && !setUp) return false;
       return up >= 1;
     }
-    // mode: "leg" (every leg end, also the last one of the match), "lost" (only a lost leg or match), "match" (match end), "off"
+    // mode: "leg" (every leg end, also the last one of the match), "lost" (only a lost leg or match), "match" (match end), "off".
+    // kind "new" (3.6.1: a new DartCounter game, e.g. "Rematch"): always, except "off"
     function resetWanted(mode, kind, won) {
+      if (kind === "new") return mode !== "off";
       if (mode === "leg") return true;
       if (mode === "lost") return !won;
       if (mode === "match") return kind === "match";
+      return false;
+    }
+    // DartCounter shows the very start of a match, nobody has thrown yet (3.6.1: a new game, e.g. "Rematch"):
+    //  x01: every rest at the same start score (d.starts) and no leg / set won (d.interims);
+    //  cricket: every number in every player box is 0 (points, legs, marks per round);
+    //  atc: our current target is 1.
+    function dcFreshMatch(game, d) {
+      if (!d) return false;
+      if (game === "x01") {
+        const r = d.rests || [];
+        return r.length > 0 && r.every(x => x === r[0]) && (d.starts || []).includes(r[0]) && (d.interims || []).every(a => a.every(x => x === 0));
+      }
+      if (game === "cricket") {
+        const t = d.teams || [];
+        return t.length > 0 && t.every(s => { const n = String(s).match(/\d+(?:[.,]\d+)?/g) || []; return n.length > 0 && n.every(x => parseFloat(x.replace(",", ".")) === 0); });
+      }
+      if (game === "atc") return d.target === 1;
       return false;
     }
     // what AutoDarts needs for a fresh X01 start, from its match state (same rules as its own Next button)
@@ -836,8 +877,9 @@
 
     // fresh leg: every score is the start score and nobody has thrown yet in it
     function isFreshLeg(raw) {
-      if (raw && /atc|around/i.test(String(raw.variant || "")) && !raw.finished && !raw.gameFinished) // Around the Clock: nobody has thrown yet
-        return (raw.turns || []).every(t => !t || !Array.isArray(t.throws) || !t.throws.length);
+      if (raw && /atc|around/i.test(String(raw.variant || "")) && !raw.finished && !raw.gameFinished) // Around the Clock: round 1, nobody has thrown yet
+        return (toNum(raw.round) || 1) <= 1 && (raw.turns || []).every(t => !t || !Array.isArray(t.throws) || !t.throws.length) &&
+          !(raw.state && Array.isArray(raw.state.currentTargets) && raw.state.currentTargets.some(x => x > 0)); // 3.6.1: not the start of every turn
       if (isCricket(raw)) // Cricket: round 1, nobody has thrown yet, no points
         return !matchOver(raw) && (toNum(raw.round) || 1) <= 1 && (raw.turns || []).every(t => !t || !Array.isArray(t.throws) || !t.throws.length) &&
           (!Array.isArray(raw.gameScores) || raw.gameScores.every(x => !x));
@@ -851,7 +893,7 @@
       dartSound, comboPossible, isCombo, createSoundRules, bullKind, createNewDarts,
       atcDcConfig, atcAutodartsCheck, atcKey, visitFits, checkoutAnswer, pickOption, legEndFromRests, interimLegEnd, resetWanted, resetPlan, isFreshLeg, atcOuterBullThrow,
       matchOver, atcTargetOf, atcEndNeedsRestart, turnProgress, rewindActivity, dcLegInfo, beatState, versionCmp, boardPhase,
-      isCricket, cricketDcConfig, cricketAutodartsCheck, cricketKey };
+      isCricket, cricketDcConfig, cricketAutodartsCheck, cricketKey, dcFreshMatch };
   })();
 
   if (typeof module === "object" && module.exports && typeof window === "undefined") {
@@ -902,6 +944,7 @@
     autoNext: "ad2dc3_auto_next",
     atcFix: "ad2dc3_atc_fix",
     boardReset: "ad2dc3_board_reset",
+    camFull: "ad2dc3_cam_full",
     boardCmd: "ad2dc3_board_cmd",
     boardAck: "ad2dc3_board_ack"
   };
@@ -2101,11 +2144,20 @@
       return r;
     }
     async function doReset(cmd) {
-      log("Reset: polecenie " + cmd.id + " (" + (cmd.kind === "atc" ? "Around the Clock" : cmd.kind === "match" ? "koniec meczu" : "koniec lega") + " w DartCounter, " + (cmd.won ? "wygrany" : "przegrany") + ") | " + location.pathname + " | " + stateText(st.lastRaw));
+      log("Reset: polecenie " + cmd.id + " (" + (cmd.kind === "atc" ? "Around the Clock" : cmd.kind === "new" ? "nowa gra" : cmd.kind === "match" ? "koniec meczu" : "koniec lega") + " w DartCounter" +
+        (cmd.kind === "new" ? "" : ", " + (cmd.won ? "wygrany" : "przegrany")) + ") | " + location.pathname + " | " + stateText(st.lastRaw));
       if (!/\/matches\//.test(location.pathname) || !st.last || !st.lastRaw) return { ok: false, how: "karta gry nie ma otwartego meczu (" + location.pathname + ", stan: " + (st.frames ? "jest" : "brak") + ")" };
-      if (cmd.kind === "atc") return resetAtc();
-      const want = cmd.game === "cricket" ? "Cricket" : "X01"; // orders of 3.5.x carry no game: X01
-      if (!new RegExp(want, "i").test(st.last.variant)) return { ok: false, how: "w Autodarts nie jest " + want + " (" + (st.last.variant || "?") + ")" };
+      if (cmd.kind === "atc") return resetAtc(); // Around the Clock ended by Autodarts on 25 (3.5.x)
+      // which game the order is for (orders of 3.5.x carry no game: X01); 3.6.1: Around the Clock end / new game too
+      const want = { cricket: ["Cricket", /cricket/i], atc: ["Around the Clock", /atc|around/i] }[cmd.game] || ["X01", /x01/i];
+      if (!want[1].test(st.last.variant)) return { ok: false, how: "w Autodarts nie jest " + want[0] + " (" + (st.last.variant || "?") + ")" };
+      if (cmd.kind === "new") { // a new DartCounter game: never undo darts that already belong to it
+        const r0 = st.lastRaw;
+        if (st.last.darts.length && !st.last.finished) return { ok: true, how: "w Autodarts trwa ju\u017c tura nowej gry (" + st.last.darts.map(d => d.label).join(" ") + "), bez resetu" };
+        if (st.lastVisit && st.lastVisit.ts >= (cmd.since || cmd.ts)) return { ok: true, how: "tura z Autodarts posz\u0142a ju\u017c do nowej gry (" + st.lastVisit.labels + "), bez resetu" };
+        if (!Core.matchOver(r0) && (Core.toNum(r0.round) || 1) <= 1 && (r0.turns || []).every(t => !t || !Array.isArray(t.throws) || !t.throws.length))
+          return { ok: true, how: "Autodarts ju\u017c jest na starcie lega" };
+      }
       // darts of a turn in progress are never thrown away: that turn goes to DartCounter first
       const end = now() + 90000;
       let waited = false;
@@ -2346,16 +2398,44 @@
   // Role: DartCounter -> poll /api/state, track visits, enter scores
   // =====================================================================
   function startDartCounter() {
+    // 3.6.1, camera of a local game (button "Kamera: pelny kadr"): DartCounter asks the browser for the camera with
+    // video.aspectRatio { exact: 1 } (app code, getMediaConstraints), so the browser itself cuts a square out of the
+    // middle of the picture; "Zoom" is the camera's zoom. A page script drops only that exact 1:1 ratio, only on the
+    // pages of local games (/local-games/..., /game/...) and only while the button is on (attribute on <html>): the
+    // camera then sends its whole picture. Online games and everything else ask DartCounter's way. Takes effect when
+    // the camera is turned on ("Activate camera") after the button was switched.
+    injectPage("(" + function () {
+      var md = navigator.mediaDevices;
+      if (!md || typeof md.getUserMedia !== "function" || md.__ad2dcCam) return;
+      var orig = md.getUserMedia.bind(md);
+      md.getUserMedia = function (c) {
+        try {
+          var on = document.documentElement.getAttribute("data-ad2dc-cam-full") === "1";
+          var v = c && c.video;
+          if (on && /\/(local-games|game)\//.test(location.pathname) && v && typeof v === "object" && v.aspectRatio && v.aspectRatio.exact === 1) {
+            var nv = {}; for (var k in v) if (k !== "aspectRatio") nv[k] = v[k];
+            var nc = {}; for (var j in c) nc[j] = c[j];
+            nc.video = nv; c = nc;
+            window.postMessage({ __ad2dcCam: 1, path: location.pathname }, location.origin);
+          }
+        } catch (e) {}
+        return orig(c);
+      };
+      md.__ad2dcCam = 1;
+    } + ")();", "Kamera (pe\u0142ny kadr)");
+    window.addEventListener("message", ev => {
+      if (samePage(ev) && ev.data && ev.data.__ad2dcCam === 1) log("Kamera: DartCounter prosi o kwadratowy obraz (1:1), gra lokalna: pe\u0142ny kadr kamery (" + ev.data.path + ")");
+    });
     const tabId = Math.random().toString(36).slice(2, 10);
     const S = {
-      bootTs: now(), enabled: true, boardReset: true, board: null, apiBase: CFG.defaultApiBase, doubleOut: true, sendDelay: 0, source: "play", entryMode: "sum", sounds: true, soundVolume: 60,
+      bootTs: now(), enabled: true, boardReset: true, camFull: true, board: null, apiBase: CFG.defaultApiBase, doubleOut: true, sendDelay: 0, source: "play", entryMode: "sum", sounds: true, soundVolume: 60,
       playSeen: null, playLive: null, playHb: null, listener: false,
       leader: false,
       apiOk: 0, apiErr: "", apiFails: 0, lastRaw: null, lastRawDarts: null,
       relayOk: 0, cloudOk: 0, sourceName: "-", snap: null,
       lastVisit: null, lastEntry: null, err: "", busy: false,
       queue: [], target: null, missed: [], waitWhy: "", dialogCtx: null, lastOwn: null,
-      resetMode: "leg", reset: null, startScore: null, pendingEnd: null, lastLegEndTs: 0, endScreen: false, legSnap: null, interimSnap: null,
+      resetMode: "leg", reset: null, startScore: null, pendingEnd: null, lastLegEndTs: 0, endSeen: false, lastGame: null, onGame: null, newGame: null, legSnap: null, interimSnap: null,
       rem: [], lastChangedIdx: null
     };
 
@@ -2448,6 +2528,12 @@
       await gset(K.boardReset, S.boardReset);
       log("Reset tarczy po ka\u017cdym legu X01 i Cricket (jak \u201eReset\u201d w Autodarts Desktop): " + (S.boardReset ? "W\u0141\u0104CZONY" : "WY\u0141\u0104CZONY"));
     });
+    ui.addButton("cam", () => "Kamera: pe\u0142ny kadr: " + (S.camFull ? "TAK" : "NIE"), async () => {
+      S.camFull = !S.camFull;
+      await gset(K.camFull, S.camFull);
+      applyCamera();
+      log("Kamera w grach lokalnych: " + (S.camFull ? "pe\u0142ny kadr (bez przycinania)" : "kadr DartCountera (kwadrat ze \u015brodka obrazu)") + ". W\u0142\u0105cz kamer\u0119 w DartCounterze jeszcze raz, \u017ceby zmieni\u0107 obraz z kamery");
+    });
     ui.addButton("missed", () => "Wyczy\u015b\u0107 niewpisane (" + S.missed.length + ")", () => {
       if (!S.missed.length) return;
       log("Wyczyszczono list\u0119 niewpisanych tur (" + S.missed.map(m => m.labels).join(", ") + ")");
@@ -2461,6 +2547,36 @@
     });
     ui.addButton("close", "Zwi\u0144", () => ui.toggle(false));
 
+    // ----- camera of a local game: the full picture (3.6.1, button "Kamera: pelny kadr", default on) -----
+    // DartCounter (app code) shows the board camera of a local game (app-games-local-board-camera) in a square box
+    // (directive appBoardCameraViewport: width = height = the smaller side of its parent) with the video as object-fit:
+    // cover, so a 16:9 or 4:3 camera loses its sides; "Zoom" only makes it bigger. Here the video is object-fit: contain
+    // and the box takes the camera's own aspect ratio, as large as its parent allows; "Zoom" works as before. Cameras of
+    // online games (app-games-online-*) and the camera dialogs (full picture already) are not touched.
+    const CAM_CSS = "app-games-local-board-camera video{object-fit:contain!important;background:#000}" +
+      "app-games-local-board-camera [appboardcameraviewport][data-ad2dc-cam]{width:var(--ad2dc-cam-w)!important;height:var(--ad2dc-cam-h)!important}";
+    function applyCamera() {
+      const flag = S.camFull ? "1" : "0"; // read by the page script when DartCounter asks for the camera
+      if (document.documentElement && document.documentElement.getAttribute("data-ad2dc-cam-full") !== flag) document.documentElement.setAttribute("data-ad2dc-cam-full", flag);
+      let css = document.getElementById("ad2dc-cam");
+      if (!S.camFull) {
+        if (css) css.remove();
+        for (const el of document.querySelectorAll("[data-ad2dc-cam]")) el.removeAttribute("data-ad2dc-cam");
+        return;
+      }
+      if (!css) { css = document.createElement("style"); css.id = "ad2dc-cam"; css.textContent = CAM_CSS; (document.head || document.documentElement).appendChild(css); }
+      for (const cam of document.querySelectorAll("app-games-local-board-camera")) {
+        const box = cam.querySelector("[appboardcameraviewport]"), v = box && box.querySelector("video"), par = box && box.parentElement;
+        if (!v || !par || !(v.videoWidth > 0) || !(v.videoHeight > 0)) continue; // no picture yet: DartCounter's box stays
+        const r = par.getBoundingClientRect(), ar = v.videoWidth / v.videoHeight;
+        if (!(r.width > 0 && r.height > 0)) continue;
+        const w = Math.floor(Math.min(r.width, r.height * ar)), h = Math.floor(w / ar);
+        if (box.style.getPropertyValue("--ad2dc-cam-w") !== w + "px") box.style.setProperty("--ad2dc-cam-w", w + "px");
+        if (box.style.getPropertyValue("--ad2dc-cam-h") !== h + "px") box.style.setProperty("--ad2dc-cam-h", h + "px");
+        if (!box.hasAttribute("data-ad2dc-cam")) box.setAttribute("data-ad2dc-cam", "");
+      }
+    }
+
     // ----- boot -----
     (async () => {
       S.enabled = await gget(K.enabled, true);
@@ -2470,6 +2586,8 @@
       S.entryMode = (await gget(K.entryMode, "sum")) === "darts" ? "darts" : "sum";
       { const m = await gget(K.resetMode, "leg"); S.resetMode = RESET_MODES[m] ? m : "leg"; }
       S.boardReset = (await gget(K.boardReset, true)) !== false;
+      S.camFull = (await gget(K.camFull, true)) !== false;
+      applyCamera(); setInterval(applyCamera, 700);
       S.sounds = (await gget(K.sounds, true)) !== false;
       ui.setQuick(soundQuick(), () => { toggleSounds(); });
       // manual board Reset: button on top of the overlay (always visible) and Alt+Shift+R (not while typing)
@@ -3212,6 +3330,7 @@
       }
       const done = await waitFor(() => (atcFinishedOrDialog() ? "koniec gry / okno" : !atcKeys() ? "kolej przeciwnika" : atcSlots().length === 0 ? "tura zatwierdzona" : null), CFG.verifyMs);
       S.lastEntry = { score: v.labels, labels: v.labels, ok: !!done, how: done || "tura nie zatwierdzona", ts: now() };
+      S.lastOwn = { ts: now(), atc: true, finish: false, labels: v.labels }; // 3.6.1: the game ending right after it = won
       if (done) { log("ATC: wpisano " + keys.join(", ") + " \u2713 (" + done + ")"); S.err = ""; }
       else setErr("ATC: tura " + v.labels + " nie zosta\u0142a zatwierdzona w DartCounter. Kliknij \u201eSubmit\u201d r\u0119cznie (klawiatura DartCounter: " + keyboardSetting() + ").", { tura: v.labels });
     }
@@ -3306,11 +3425,68 @@
       } catch (_) {}
     }
 
-    // ----- end of a DartCounter leg / match -> fresh X01 game in Autodarts (setting "Reset Autodarts") -----
+    // ----- end of a DartCounter leg / match / game, a new game -> Autodarts at the start (setting "Reset Autodarts") -----
     const START_SCORES = [101, 170, 201, 301, 401, 501, 601, 701, 801, 901, 1001];
-    function endScreenOpen() {
-      return Array.from(document.querySelectorAll("app-match-local-end-screen-dialog,app-match-online-end-screen-dialog,app-local-end-screen," +
-        "app-cricket-tactics-local-end-screen-dialog,app-cricket-tactics-online-end-screen-dialog")).some(visible);
+    const GAME_NAMES = { x01: "X01", cricket: "Cricket", atc: "Around the Clock" };
+    // DartCounter ends a LOCAL game like this (app code, X01 / Cricket / Around the Clock alike): it removes the saved
+    // match, opens the end screen ("Rematch") and at once goes back to the game's setup page (/local-games/<game>). So the
+    // end screen of a local game is on the setup page, after the game page. The same dialog on the game page is
+    // "Statistics" of the in-game menu (no "Rematch"): never an end. Online games keep their end screen on the game page.
+    const END_SCREENS = "app-match-local-end-screen-dialog,app-match-online-end-screen-dialog,app-local-end-screen," +
+      "app-cricket-tactics-local-end-screen-dialog,app-cricket-tactics-online-end-screen-dialog,app-around-the-clock-local-end-screen-dialog";
+    function endScreenOpen() { return Array.from(document.querySelectorAll(END_SCREENS)).some(visible); }
+    // the game of the game page this tab is on: "x01" | "cricket" | "atc" | null
+    function gamePageKind() { return atcPage() ? "atc" : cricketPage() ? "cricket" : matchPage().ok ? "x01" : null; }
+    // the very start of a match on the game page: true / false, null = nothing to read yet (e.g. the DartBot throws)
+    function freshMatchNow(game) {
+      if (game === "x01") {
+        const r = readRemaining();
+        return r.length && r.every(x => x != null) ? Core.dcFreshMatch("x01", { rests: r, starts: START_SCORES, interims: readInterims() }) : null;
+      }
+      if (game === "cricket") { const t = crTeams(); return t.length ? Core.dcFreshMatch("cricket", { teams: t.map(e => e.textContent || "") }) : null; }
+      if (game === "atc") {
+        const t = atcTarget(atcKeys(), Core.atcDcConfig(atcDcSettings()));
+        return t ? Core.dcFreshMatch("atc", { target: t.kind === "number" ? t.n : null }) : null;
+      }
+      return null;
+    }
+    // 3.6.1. 1) The end of a local game: its end screen once DartCounter left the game page (online: on the game page).
+    // 2) A new game: this tab arrives on a local game page ("Rematch": end screen -> setup page -> game page; a game started
+    // from the setup page; this page opened) and DartCounter shows the very start of the match there for a moment (a match
+    // resumed in the middle is not new): the game tab brings Autodarts to the start of a leg, like after a lost leg.
+    function watchGame() {
+      const p = location.pathname, game = gamePageKind(), online = !!game && !/^\/game\//.test(p);
+      if (game) {
+        const n = game === "x01" ? readRemaining().length : game === "cricket" ? crTeams().length : 0;
+        const lg = S.lastGame;
+        S.lastGame = { game, ts: now(), online, players: n || (lg && lg.game === game ? lg.players : 0) };
+      }
+      const lg = S.lastGame, es = endScreenOpen();
+      const end = !!lg && es && (lg.online ? game === lg.game : !game && now() - lg.ts < 30000);
+      if (end && !S.endSeen) legEnded("match", "ekran ko\u0144ca gry " + GAME_NAMES[lg.game] + (lg.online ? "" : " (DartCounter wr\u00f3ci\u0142 do ustawie\u0144 gry)"), null, null, lg.game);
+      S.endSeen = end;
+      if (!game || online) { S.onGame = null; S.newGame = null; return; }
+      if (S.onGame !== game) { S.onGame = game; S.newGame = { game, since: now(), fresh: 0 }; }
+      const ng = S.newGame;
+      if (!ng) return;
+      const f = freshMatchNow(game);
+      if (f === false || now() - ng.since > 30000) {
+        S.newGame = null;
+        if (f === false) log("Diagnostyka: gra " + GAME_NAMES[game] + " w DartCounterze nie od pocz\u0105tku meczu (wznowiona): bez resetu Autodarts");
+        return;
+      }
+      if (f === null) { ng.fresh = 0; return; }
+      if (!ng.fresh) ng.fresh = now();
+      if (now() - ng.fresh < 1500) return; // the start of the match for a moment (a resumed match loads its state at once)
+      S.newGame = null;
+      // a visit already came for this game (queued or entered): Autodarts is in it, never undo that turn there
+      if (S.queue.length || (S.lastEntry && S.lastEntry.ts >= ng.since)) { log("Diagnostyka: nowa gra w DartCounterze, ale tura ju\u017c idzie: bez resetu Autodarts"); return; }
+      const what = "nowa gra w DartCounterze (" + GAME_NAMES[game] + ")";
+      log("Wykryto " + what + ": start meczu, nikt jeszcze nie rzuca\u0142");
+      if (!S.enabled || !S.leader) { log("Reset Autodarts: pomijam (" + (!S.enabled ? "most wy\u0142\u0105czony" : "inna karta DartCounter jest aktywna") + ")"); return; }
+      if (!Core.resetWanted(S.resetMode, "new")) { log("Reset Autodarts: nie teraz (" + RESET_MODES[S.resetMode] + ")"); return; }
+      if (S.source !== "play") { log("Reset Autodarts dzia\u0142a tylko ze \u017ar\u00f3d\u0142em \u201egra Autodarts\u201d"); return; }
+      requestReset("new", null, what, game, ng.since);
     }
     // legs / sets won per player (app-in-game-interim-score, one per player: [sets, legs] or [legs])
     function readInterims() {
@@ -3320,7 +3496,7 @@
     // Two signals for a new leg, each compared with the last COMPLETE reading (a moment without scores, e.g. while
     // DartCounter redraws between legs, does not wipe it): the rests back to the start score, or a legs counter + 1.
     function watchLegEnd(r) {
-      if (atcPage() || !matchPage().ok) { S.endScreen = false; S.legSnap = null; S.interimSnap = null; return; }
+      if (atcPage() || !matchPage().ok) { S.legSnap = null; S.interimSnap = null; return; }
       if (r.length && r.every(x => x != null)) {
         const prev = S.legSnap;
         if (S.startScore == null && r.every(x => x === r[0]) && START_SCORES.includes(r[0])) S.startScore = r[0];
@@ -3342,9 +3518,6 @@
         }
         S.interimSnap = it;
       }
-      const es = endScreenOpen();
-      if (es && !S.endScreen) legEnded("match", "ekran ko\u0144ca meczu");
-      S.endScreen = es;
     }
     // DartCounter's own state of a local match: the app saves it (IndexedDB "dartcounter-db", table
     // unfinishedLocalMatches) on every change of player, also right when a new leg starts. Independent of the page
@@ -3393,12 +3566,14 @@
     }
     function winnerText(info) { return info && info.winner ? ", wygra\u0142 " + (info.winner.cpu ? "DartBot" : info.winner.name || "gracz") : ""; }
     // evaluated a moment later: our own checkout entry finishes (dialog answer) before we decide won / lost
-    function legEnded(kind, why, store, winnerIdx) {
+    // game: "x01" | "cricket" | "atc" (the end screen of a local game is on its setup page: the game comes with it)
+    function legEnded(kind, why, store, winnerIdx, game) {
       const wi = typeof winnerIdx === "number" && winnerIdx >= 0 ? winnerIdx : null;
-      if (S.pendingEnd) { if (kind === "match") S.pendingEnd.kind = "match"; S.pendingEnd.why += ", " + why; if (store) S.pendingEnd.store = store; if (wi != null) S.pendingEnd.winnerIdx = wi; return; }
+      if (S.pendingEnd) { if (kind === "match") S.pendingEnd.kind = "match"; S.pendingEnd.why += ", " + why; if (store) S.pendingEnd.store = store; if (wi != null) S.pendingEnd.winnerIdx = wi; if (game) S.pendingEnd.game = game; return; }
       if (now() - S.lastLegEndTs < 5000) { log("Diagnostyka: ten sam koniec lega (" + why + ")"); return; } // new leg + end screen of the same checkout
-      log("Wykryto koniec " + (kind === "match" ? "meczu" : "lega") + " w DartCounter (" + why + ")" + (cricketPage() ? " [Cricket]" : ""));
-      S.pendingEnd = { kind, ts: now(), why, store: store || null, winnerIdx: wi };
+      const g = game || gamePageKind() || "x01";
+      log("Wykryto koniec " + (kind === "match" ? "meczu" : "lega") + " w DartCounter (" + why + ")" + (g !== "x01" ? " [" + GAME_NAMES[g] + "]" : ""));
+      S.pendingEnd = { kind, ts: now(), why, store: store || null, winnerIdx: wi, game: g };
       setTimeout(finishLegEnd, 1200);
     }
     async function finishLegEnd() {
@@ -3408,18 +3583,24 @@
       S.pendingEnd = null;
       S.lastLegEndTs = now();
       // who won: DartCounter's saved state (DartBot or a player) first; else our own last visit (checkout or not)
+      const game = p.game || "x01";
+      const lg = S.lastGame && S.lastGame.game === game ? S.lastGame : null; // players seen on the game page (end screen: setup page)
       let store = p.store;
-      if (!store && /^\/game\/match\b/.test(location.pathname)) {
+      if (!store && game === "x01" && /^\/game\/match\b/.test(location.pathname)) {
         let info = null;
         try { info = Core.dcLegInfo(await readDcStore()); } catch (_) {}
         const prev = S.storeSnap;
         if (info) { if (prev && prev.id === info.id && info.legs > prev.legs) store = info; S.storeSnap = info; }
       }
-      const solo = readRemaining().length === 1;
+      const solo = (readRemaining().length || (lg && lg.players) || 0) === 1;
       let won, whyWon;
-      if (cricketPage()) {
+      if (game === "atc") {
+        // Around the Clock: the game ended right after our visit
+        won = !!(S.lastOwn && S.lastOwn.atc && p.ts - S.lastOwn.ts < 3500);
+        whyWon = S.lastOwn && S.lastOwn.atc ? "gra sko\u0144czy\u0142a si\u0119 " + (won ? "zaraz po Twojej turze " : "nie po Twojej turze ") + S.lastOwn.labels : "brak Twojej tury od pocz\u0105tku gry";
+      } else if (game === "cricket") {
         // Cricket: the team whose legs counter went up vs the team our last visit was entered for
-        const teams = crTeams().length;
+        const teams = crTeams().length || (lg && lg.players) || 0;
         if (teams <= 1) { won = true; whyWon = "jeden gracz"; }
         else if (p.winnerIdx != null && S.ownTeam != null) { won = p.winnerIdx === S.ownTeam; whyWon = "leg wygra\u0142 gracz " + (p.winnerIdx + 1) + ", Twoje tury id\u0105 do gracza " + (S.ownTeam + 1); }
         else { won = !!(S.lastOwn && S.lastOwn.cricket && p.ts - S.lastOwn.ts < 3500); whyWon = S.lastOwn ? "leg sko\u0144czy\u0142 si\u0119 " + (won ? "zaraz po Twojej turze " : "nie po Twojej turze ") + S.lastOwn.labels : "brak Twojej tury od ostatniego lega"; }
@@ -3431,13 +3612,13 @@
         whyWon = solo ? "jeden gracz" : S.lastOwn ? (S.lastOwn.finish ? "zako\u0144czy\u0142a Twoja tura " + S.lastOwn.labels : "Twoja ostatnia tura " + S.lastOwn.labels + " bez zako\u0144czenia") : "brak Twojej tury od ostatniego lega";
       }
       S.lastOwn = null;
-      const what = (p.kind === "match" ? "koniec meczu" : "koniec lega") + " (" + (won ? "wygrany" : "przegrany") + ")";
+      const what = (p.kind !== "match" ? "koniec lega" : game === "atc" ? "koniec gry" : "koniec meczu") + " (" + (won ? "wygrany" : "przegrany") + ")";
       log("DartCounter: " + what + " | " + whyWon + " | ustawienie: " + RESET_MODES[S.resetMode] + " | \u017ar\u00f3d\u0142o: " + S.source + " | aktywna karta: " + S.leader);
       if (S.enabled && S.leader) requestBoardReset(what);
       if (!S.enabled || !S.leader) { log("Reset Autodarts: pomijam (" + (!S.enabled ? "most wy\u0142\u0105czony" : "inna karta DartCounter jest aktywna") + ")"); return; }
       if (!Core.resetWanted(S.resetMode, p.kind, won)) { log("Reset Autodarts: nie teraz (" + RESET_MODES[S.resetMode] + ")"); return; }
       if (S.source !== "play") { log("Reset Autodarts dzia\u0142a tylko ze \u017ar\u00f3d\u0142em \u201egra Autodarts\u201d"); return; }
-      requestReset(p.kind, won, what);
+      requestReset(p.kind, won, what, game);
     }
     // Around the Clock only: Autodarts may close its game on the outer bull (25) while DartCounter ("Finish by hitting
     // the bullseye") still waits for 50. DartCounter took the 25 as a miss; the Autodarts game is started again so the
@@ -3457,9 +3638,10 @@
     }
     // Order to the game tab (shared userscript storage). The game tab answers at once ("received"), then with its steps
     // (every Autodarts API answer with its HTTP code) and the result. No answer within 3 s: the same order again (3 tries).
-    async function requestReset(kind, won, what) {
-      const game = kind === "atc" ? "atc" : cricketPage() ? "cricket" : "x01"; // which Autodarts game the order is for
+    async function requestReset(kind, won, what, forGame, since) {
+      const game = forGame || (kind === "atc" ? "atc" : cricketPage() ? "cricket" : "x01"); // which Autodarts game the order is for
       const cmd = { id: tabId + "-" + now().toString(36), ts: now(), kind, won, game, v: VERSION, attempt: 1 };
+      if (since) cmd.since = since; // a new game: when this tab came to its game page
       S.reset = { id: cmd.id, ts: now(), sentTs: now(), state: "sent", how: "czekam na kart\u0119 gry", what, game: { atc: "Around the Clock", cricket: "Cricket", x01: "X01" }[game], cmd, steps: [] };
       await gset(K.resetCmd, cmd);
       const b = beatInfo(S.playHb, "gry");
@@ -3587,6 +3769,7 @@
     // ----- whose turn: remember which player's rest changed last -----
     function watchRemaining() {
       const r = readRemaining();
+      watchGame();
       watchLegEnd(r);
       if (r.length !== S.rem.length) { S.lastChangedIdx = null; S.rem = r; return; }
       const changed = [];

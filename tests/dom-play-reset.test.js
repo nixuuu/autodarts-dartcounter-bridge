@@ -794,6 +794,63 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check("manual: Next refused -> ack fail with the HTTP answer", ba.state === "fail" && /Dalej\u201d nie wyszed\u0142: POST \/matches\/m1\/players\/next \u2192 HTTP 403/.test(ba.how), ba);
   }
 
+  // 3.6.1: a new DartCounter game ("Rematch") -> order kind "new": Autodarts back at the start of the leg like after a
+  // lost leg (Undo); nothing to do when it is there already
+  {
+    const store = makeStore();
+    let pg;
+    const history = [];
+    const play = s2 => { history.push(pg.lastState); pg.lastState = s2; pg.send(s2); };
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") { if (!history.length) return { ok: false, status: 400 }; const prev = history.pop(); pg.lastState = prev; setTimeout(() => pg.send(prev), 30); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.lastState = real({}); pg.send(pg.lastState); history.length = 0;
+    play(real({ round: 1, gameScores: [441], turns: [{ round: 1, playerId: "p1", throws: [R("n1", 20, 1), R("n2", 20, 1), R("n3", 20, 1)] }] }));
+    play(real({ round: 2, gameScores: [441], turns: [{ round: 2, playerId: "p1", throws: [] }] }));
+    await sleep(300);
+    store.set("ad2dc3_reset_cmd", { id: "dc-new1", ts: Date.now(), kind: "new", won: null, game: "x01", v: "3.6.1", attempt: 1 });
+    await sleep(2500);
+    check("3.6.1: new DartCounter game on an X01 leg in progress -> Undo back to the leg start, ack ok", ack(store).id === "dc-new1" && ack(store).state === "ok" && /Undo/.test(ack(store).how) &&
+      pg.calls.length === 2 && pg.calls.every(c => /undo/.test(c)) && pg.logs.some(l => /\(nowa gra w DartCounter\)/.test(l)), { calls: pg.calls, ack: ack(store) });
+    store.set("ad2dc3_reset_cmd", { id: "dc-new2", ts: Date.now(), kind: "new", won: null, game: "x01", v: "3.6.1", attempt: 1 });
+    await sleep(1500);
+    check("3.6.1: new game when Autodarts is at the leg start already -> ok, nothing called", ack(store).id === "dc-new2" && ack(store).state === "ok" && /już jest na starcie/.test(ack(store).how) && pg.calls.length === 2, { ack: ack(store), calls: pg.calls });
+    store.set("ad2dc3_reset_cmd", { id: "dc-new3", ts: Date.now(), kind: "new", won: null, game: "atc", v: "3.6.1", attempt: 1 });
+    await sleep(1500);
+    check("3.6.1: new Around the Clock game while Autodarts plays X01 -> fail, nothing called", ack(store).id === "dc-new3" && ack(store).state === "fail" && /nie jest Around the Clock/.test(ack(store).how) && pg.calls.length === 2, ack(store));
+  }
+  // 3.6.1: Around the Clock ended in DartCounter (order "match", game "atc"): lost -> the Autodarts game back to its start
+  // (Undo); won (Autodarts finished on 50 too) -> next game (games/next)
+  {
+    const store = makeStore();
+    let pg;
+    const history = [];
+    const atcS = o => state(Object.assign({ variant: "ATC", settings: { order: "1-20-Bull", mode: "Full", hits: 1 }, gameScores: [0] }, o));
+    const play = s2 => { history.push(pg.lastState); pg.lastState = s2; pg.send(s2); };
+    pg = makePlay(store, (m, p) => {
+      if (p === "/matches/m1/undo") { if (!history.length) return { ok: false, status: 400 }; const prev = history.pop(); pg.lastState = prev; setTimeout(() => pg.send(prev), 30); return { ok: true, status: 200 }; }
+      if (p === "/matches/m1/games/next") { setTimeout(() => pg.send(atcS({ leg: 2, round: 1 })), 50); return { ok: true, status: 200 }; }
+      return { ok: false, status: 404, err: "HTTP 404" };
+    });
+    await sleep(1800);
+    pg.lastState = atcS({}); pg.send(pg.lastState); history.length = 0;
+    play(atcS({ round: 1, gameScores: [2], turns: [{ round: 1, playerId: "p1", throws: [T(1, 1), T(2, 1), T(5, 1)] }] }));
+    play(atcS({ round: 2, gameScores: [2], turns: [{ round: 2, playerId: "p1", throws: [] }] }));
+    await sleep(300);
+    store.set("ad2dc3_reset_cmd", { id: "dc-atc-end1", ts: Date.now(), kind: "match", won: false, game: "atc", v: "3.6.1", attempt: 1 });
+    await sleep(2500);
+    check("3.6.1: Around the Clock lost in DartCounter -> Autodarts game back to its start with Undo, ack ok", ack(store).id === "dc-atc-end1" && ack(store).state === "ok" && /Undo/.test(ack(store).how) &&
+      pg.calls.length === 2 && pg.calls.every(c => /undo/.test(c)), { calls: pg.calls, ack: ack(store) });
+    play(atcS({ round: 9, gameScores: [21], finished: true, gameFinished: true, winner: 0, turns: [{ round: 9, playerId: "p1", throws: [T(25, 2)] }] }));
+    await sleep(300);
+    store.set("ad2dc3_reset_cmd", { id: "dc-atc-end2", ts: Date.now(), kind: "match", won: true, game: "atc", v: "3.6.1", attempt: 1 });
+    await sleep(2500);
+    check("3.6.1: Around the Clock won (Autodarts finished on 50 too) -> next Autodarts game (games/next), ack ok", ack(store).id === "dc-atc-end2" && ack(store).state === "ok" &&
+      pg.calls.slice(2).join("|") === "POST /matches/m1/games/next", { calls: pg.calls, ack: ack(store) });
+  }
+
   console.log(failed ? "\n" + failed + " FAILED" : "\nall game-tab reset checks passed");
   process.exit(failed ? 1 : 0);
 })();

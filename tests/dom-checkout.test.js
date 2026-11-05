@@ -343,17 +343,21 @@ async function scenario(mode, rest, visits, opts) {
     s.stop();
   }
 
-  // match end screen with setting "match end"; a leg end before it gives no order
+  // match end screen with setting "match end"; a leg end before it gives no order.
+  // 3.6.1: like DartCounter (app code) the end screen of a local match comes on the setup page /local-games/match, right
+  // after the game page (it removes the saved match, opens the end screen and goes back)
   {
     const s = await scenario("sum", 40, ["D20"], { resetMode: "match" });
     check("setting 'match end': leg end -> no order", !s.store.get("ad2dc3_reset_cmd"), s.store.get("ad2dc3_reset_cmd"));
     await sleep(5200);
+    s.p.doc.getElementById("board").remove(); s.p.remove();
+    s.p.w.history.pushState({}, "", "/local-games/match");
     const es = s.p.doc.createElement("app-match-local-end-screen-dialog");
     es.textContent = "Match over";
     s.p.doc.body.append(es);
     await sleep(2500);
     const cmd = s.store.get("ad2dc3_reset_cmd");
-    check("match end screen -> reset order kind 'match'", cmd && cmd.kind === "match", cmd);
+    check("match end screen on the setup page -> reset order kind 'match' for X01", cmd && cmd.kind === "match" && cmd.game === "x01", cmd);
     // 3.5.5: no answer from the game tab -> the same order again after 3 s and 6 s, then a clear error (alive, same version)
     await sleep(4000);
     check("no answer within 3 s -> the same order sent again (attempt 2)", (s.store.get("ad2dc3_reset_cmd") || {}).id === cmd.id && s.store.get("ad2dc3_reset_cmd").attempt === 2, s.store.get("ad2dc3_reset_cmd"));
@@ -409,6 +413,108 @@ async function scenario(mode, rest, visits, opts) {
     p.g.rest = [100, 60]; p.render(); await sleep(900);
     p.g.rest = [100, 100]; p.render(); await sleep(2500);
     check("undo to equal rests (100/100) -> no leg end, no reset order", !store.get("ad2dc3_reset_cmd"), store.get("ad2dc3_reset_cmd"));
+    clearInterval(hb);
+  }
+
+  // 3.6.1: a lost X01 match vs DartBot (2 legs) and "Rematch", as DartCounter does it (app code): the end screen opens
+  // on the setup page /local-games/match after the game page; "Rematch" goes back to /game/match at the start of a match.
+  // The same dialog on the game page is "Statistics" of the in-game menu: never a match end.
+  {
+    const store = makeStore();
+    const hb = heartbeat(store);
+    const p = makeDC(store, { mode: "sum", rest: 301, cpuRest: 260 }); // a match in progress: not a new game
+    await sleep(1500);
+    const stats = p.doc.createElement("app-match-local-end-screen-dialog"); stats.textContent = "Statistics";
+    p.doc.body.append(stats);
+    await sleep(2500);
+    check("3.6.1: 'Statistics' in the middle of a match (end-screen dialog on the game page) -> no order", !store.get("ad2dc3_reset_cmd"), store.get("ad2dc3_reset_cmd"));
+    stats.remove();
+    // the DartBot wins the last leg: no new leg on the scoreboard, the saved match is gone, end screen on the setup page
+    p.doc.getElementById("board").remove(); p.remove();
+    p.w.history.pushState({}, "", "/local-games/match");
+    const es = p.doc.createElement("app-match-local-end-screen-dialog"); es.textContent = "Rematch";
+    p.doc.body.append(es);
+    await sleep(2500);
+    const cmd = store.get("ad2dc3_reset_cmd");
+    check("3.6.1: lost match: end screen on the setup page -> reset order 'match' for X01, won = false", cmd && cmd.kind === "match" && cmd.game === "x01" && cmd.won === false &&
+      p.g.logs.some(l => /Wykryto koniec meczu w DartCounter \(ekran końca gry X01/.test(l)), { cmd, logs: p.g.logs.filter(l => /koniec|Reset/.test(l)).slice(-5) });
+    check("3.6.1: lost match -> board Reset order too", /koniec meczu \(przegrany\)/.test((store.get("ad2dc3_board_cmd") || {}).what || ""), store.get("ad2dc3_board_cmd"));
+    store.set("ad2dc3_reset_ack", { id: cmd.id, ts: Date.now(), state: "ok", how: "leg od nowa: cofnięty przyciskiem Undo (6×)" });
+    // "Rematch": DartCounter closes the end screen and starts a new match on the game page
+    es.remove();
+    p.doc.body.insertAdjacentHTML("afterbegin", `<div id="board"><app-remaining-score id="r0">501</app-remaining-score><app-remaining-score id="r1">501</app-remaining-score>
+      <app-in-game-interim-score id="i0"><div><span>0</span></div></app-in-game-interim-score><app-in-game-interim-score id="i1"><div><span>0</span></div></app-in-game-interim-score></div>`);
+    p.g.rest = [501, 501]; p.render();
+    p.w.history.pushState({}, "", "/game/match");
+    p.add();
+    await sleep(3000);
+    const nc = store.get("ad2dc3_reset_cmd");
+    check("3.6.1: Rematch -> new game at the start of the match -> order 'new' for X01", nc && nc.kind === "new" && nc.game === "x01" && nc.id !== cmd.id &&
+      p.g.logs.some(l => /Wykryto nowa gra w DartCounterze \(X01\)/.test(l)), { nc, logs: p.g.logs.slice(-6) });
+    store.set("ad2dc3_reset_ack", { id: nc.id, ts: Date.now(), state: "ok", how: "Autodarts już jest na starcie lega" });
+    // a match resumed in the middle (setup page -> game page with rests below the start): no order
+    p.doc.getElementById("board").remove(); p.remove();
+    p.w.history.pushState({}, "", "/local-games/match");
+    await sleep(1500);
+    p.doc.body.insertAdjacentHTML("afterbegin", `<div id="board"><app-remaining-score id="r0">501</app-remaining-score><app-remaining-score id="r1">501</app-remaining-score>
+      <app-in-game-interim-score id="i0"><div><span>0</span></div></app-in-game-interim-score><app-in-game-interim-score id="i1"><div><span>1</span></div></app-in-game-interim-score></div>`);
+    p.g.rest = [301, 220]; p.render();
+    p.w.history.pushState({}, "", "/game/match");
+    p.add();
+    await sleep(3000);
+    check("3.6.1: a match resumed in the middle -> no new-game order", (store.get("ad2dc3_reset_cmd") || {}).id === nc.id &&
+      p.g.logs.filter(l => /nie od początku meczu \(wznowiona\)/.test(l)).length === 2, { cmd: store.get("ad2dc3_reset_cmd"), logs: p.g.logs.slice(-4) });
+    // the next visit still goes in
+    publish(store, "T20 T20 T20");
+    await sleep(5000);
+    check("3.6.1: after the rematch the next visit is entered", p.g.turns.length === 1 && p.g.turns[0].score === 180, { turns: p.g.turns, logs: p.g.logs.slice(-10) });
+    clearInterval(hb);
+  }
+  // 3.6.1: camera of a local game, markup of DartCounter (app code): app-games-local-board-camera > div > div[appBoardCameraViewport]
+  // (a square set by the app) > video.object-cover. Button "Kamera: pelny kadr" (default on): video object-fit contain, box in
+  // the camera's aspect ratio inside its parent. Online cameras untouched. X01 entry unchanged.
+  {
+    const store = makeStore();
+    const hb = heartbeat(store);
+    const p = makeDC(store, { mode: "sum", rest: 301, cpuRest: 260 });
+    const cam = (tag) => {
+      const host = p.doc.createElement(tag);
+      host.innerHTML = `<div class="relative h-full w-full justify-center overflow-hidden"><div appBoardCameraViewport="" class="relative mx-auto overflow-hidden rounded-2xl" style="width: 400px; height: 400px;">` +
+        `<video autoplay="" playsinline="" muted="" class="h-full w-full rounded-2xl object-cover"></video></div></div>`;
+      p.doc.body.append(host);
+      const par = host.firstElementChild, box = par.firstElementChild, v = box.querySelector("video");
+      par.getBoundingClientRect = () => ({ width: 640, height: 400, top: 0, left: 0, right: 640, bottom: 400 });
+      Object.defineProperty(v, "videoWidth", { value: 1280 }); Object.defineProperty(v, "videoHeight", { value: 720 });
+      return box;
+    };
+    const local = cam("app-games-local-board-camera"), online = cam("app-games-online-board-camera");
+    await sleep(2200);
+    const css = p.doc.getElementById("ad2dc-cam");
+    check("3.6.1 camera: full picture by default: style for the local board camera (object-fit contain), box in 16:9 inside its parent (640x360)",
+      css && /app-games-local-board-camera video\{object-fit:contain!important/.test(css.textContent) && !/online/.test(css.textContent) &&
+      local.hasAttribute("data-ad2dc-cam") && local.style.getPropertyValue("--ad2dc-cam-w") === "640px" && local.style.getPropertyValue("--ad2dc-cam-h") === "360px",
+      { css: css && css.textContent, w: local.style.getPropertyValue("--ad2dc-cam-w"), h: local.style.getPropertyValue("--ad2dc-cam-h") });
+    check("3.6.1 camera: the camera of an online game is not touched", !online.hasAttribute("data-ad2dc-cam") && !online.style.getPropertyValue("--ad2dc-cam-w"), online.outerHTML.slice(0, 200));
+    check("3.6.1 camera: flag for the page script (whole camera picture on local pages) is on", p.doc.documentElement.getAttribute("data-ad2dc-cam-full") === "1", p.doc.documentElement.outerHTML.slice(0, 120));
+    p.openPanel(); await sleep(300);
+    const btn = p.doc.getElementById("ad2dc-root").shadowRoot.querySelector('#btns [data-id="cam"]');
+    check("3.6.1 camera: panel button 'Kamera: pelny kadr: TAK'", btn && /Kamera: pełny kadr: TAK/.test(btn.textContent), btn && btn.textContent);
+    btn.click(); await sleep(1000);
+    check("3.6.1 camera: button off -> DartCounter's own picture again (no style, no box override, page-script flag off), saved", !p.doc.getElementById("ad2dc-cam") && !local.hasAttribute("data-ad2dc-cam") &&
+      p.doc.documentElement.getAttribute("data-ad2dc-cam-full") === "0" && store.get("ad2dc3_cam_full") === false && /NIE/.test(btn.textContent), { css: !!p.doc.getElementById("ad2dc-cam"), saved: store.get("ad2dc3_cam_full") });
+    p.remove(); p.g.rest[1] -= 45; p.render(); await sleep(500); p.add(); await sleep(500);
+    publish(store, "T20 T20 S20");
+    await sleep(5200);
+    check("3.6.1 camera: X01 visit still entered", p.g.turns.length === 1 && p.g.turns[0].score === 140, p.g.turns);
+    clearInterval(hb);
+  }
+  // 3.6.1: the bridge never resets Autodarts for a new game with "Reset Autodarts: off"
+  {
+    const store = makeStore();
+    const hb = heartbeat(store);
+    makeDC(store, { mode: "sum", rest: 501, resetMode: "off" });
+    await sleep(3500);
+    check("3.6.1: new game at the start of the match with 'Reset Autodarts: off' -> no order", !store.get("ad2dc3_reset_cmd"), store.get("ad2dc3_reset_cmd"));
     clearInterval(hb);
   }
 

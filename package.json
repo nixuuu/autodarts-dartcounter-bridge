@@ -1,6 +1,6 @@
 {
   "name": "autodarts-dartcounter-bridge",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "private": true,
   "description": "Userscript: AutoDarts visits entered automatically into app.dartcounter.net",
   "license": "MIT",

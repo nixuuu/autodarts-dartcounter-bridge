@@ -543,6 +543,10 @@ test("isFreshLeg Around the Clock: not finished, no darts yet", () => {
   assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [{ throws: [] }], finished: false }), true);
   assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [{ throws: [{}] }], finished: false }), false);
   assert.equal(Core.isFreshLeg({ variant: "ATC", settings: {}, turns: [], finished: true }), false);
+  // 3.6.1: the start of a later turn is not the start of the game (round 2+, a target index above 0)
+  assert.equal(Core.isFreshLeg({ variant: "ATC", round: 1, settings: {}, turns: [{ throws: [] }], state: { currentTargets: [0] } }), true);
+  assert.equal(Core.isFreshLeg({ variant: "ATC", round: 2, settings: {}, turns: [{ throws: [] }] }), false);
+  assert.equal(Core.isFreshLeg({ variant: "ATC", round: 1, settings: {}, turns: [{ throws: [] }], state: { currentTargets: [0, 3] } }), false);
 });
 test("match tracker: a visit that ends the Autodarts game carries finished", () => {
   const out = [];
@@ -705,6 +709,39 @@ test("Cricket (3.6.0): fresh leg, game over by gameWinner, reset plan", () => {
   assert.equal(Core.isCricket({ variant: "ATC" }), false);
   assert.equal(Core.isCricket(null), false);
   assert.equal(Core.matchOver({ settings: { variant: "Cricket" }, gameWinner: 1 }), true);
+});
+test("3.6.1: a new DartCounter game (Rematch) resets Autodarts in every mode except off", () => {
+  assert.equal(Core.resetWanted("leg", "new", null), true);
+  assert.equal(Core.resetWanted("lost", "new", null), true);
+  assert.equal(Core.resetWanted("match", "new", null), true);
+  assert.equal(Core.resetWanted("off", "new", null), false);
+  // the other kinds as before
+  assert.equal(Core.resetWanted("lost", "match", true), false);
+  assert.equal(Core.resetWanted("lost", "match", false), true);
+  assert.equal(Core.resetWanted("match", "leg", false), false);
+});
+test("3.6.1: the very start of a DartCounter match (X01, Cricket, Around the Clock)", () => {
+  const starts = [301, 501, 701];
+  const x = (rests, interims) => Core.dcFreshMatch("x01", { rests, starts, interims });
+  assert.equal(x([501, 501], [[0], [0]]), true);
+  assert.equal(x([501, 501], [[0, 0], [0, 0]]), true); // sets and legs
+  assert.equal(x([501, 501], []), true); // no legs counter shown
+  assert.equal(x([501, 441], [[0], [0]]), false); // somebody threw
+  assert.equal(x([501, 501], [[0], [1]]), false); // start of leg 2: a match resumed, not a new one
+  assert.equal(x([451, 451], [[0], [0]]), false); // no start score
+  assert.equal(x([], []), false);
+  const c = teams => Core.dcFreshMatch("cricket", { teams });
+  assert.equal(c(["0 0 Avg. MPR 0.00", "0 0 Avg. MPR 0.00"]), true);
+  assert.equal(c(["0 0 Avg. MPR 0,00"]), true);
+  assert.equal(c(["0 0 Avg. MPR 1.00", "0 0 Avg. MPR 0.00"]), false); // marks thrown
+  assert.equal(c(["20 0 Avg. MPR 4.00", "0 0 Avg. MPR 0.00"]), false);
+  assert.equal(c(["0 1 Avg. MPR 0.00", "0 0 Avg. MPR 0.00"]), false); // a leg won
+  assert.equal(c(["Ja"]), false);
+  assert.equal(c([]), false);
+  assert.equal(Core.dcFreshMatch("atc", { target: 1 }), true);
+  assert.equal(Core.dcFreshMatch("atc", { target: 2 }), false);
+  assert.equal(Core.dcFreshMatch("atc", { target: null }), false);
+  assert.equal(Core.dcFreshMatch("x01", null), false);
 });
 
 if (failed) { console.log(failed + " test(s) failed"); process.exit(1); }

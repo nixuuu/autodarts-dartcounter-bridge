@@ -109,7 +109,7 @@ function makeCricketPage(store, opts) {
   w.console.log = (...a) => g.logs.push(a.join(" "));
   w.console.warn = (...a) => { g.warns.push(a); };
   w.eval(SCRIPT);
-  return { w, doc, g };
+  return { w, doc, g, render };
 }
 
 let seq = 0;
@@ -187,6 +187,37 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     publish(store, [B25]); await sleep(4000);
     const cmd = store.get("ad2dc3_reset_cmd");
     check("won leg -> DartCounter legs 1/0, reset order with won = true", JSON.stringify(p.g.legsLog) === "[0]" && cmd && cmd.game === "cricket" && cmd.won === true, { legs: p.g.legsLog, cmd });
+    clearInterval(hb); p.w.close();
+  }
+  // 3.6.1: a lost Cricket match and "Rematch", as DartCounter does it (app code): the end screen opens on the setup page
+  // /local-games/cricket-tactics after the game page; "Rematch" goes back to the game page at the start of a match
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    const p = makeCricketPage(store, { preset: g => { g.teams[1].points = 40; } }); // a match in progress: not a new game
+    await sleep(1500);
+    publish(store, [T(20, 1), T(19, 1), T(18, 1)]); await sleep(5000);
+    check("3.6.1: Cricket match in progress -> visit entered, no new-game order", JSON.stringify(p.g.turns[0]) === '["S20","S19","S18"]' && !store.get("ad2dc3_reset_cmd"), { turns: p.g.turns, cmd: store.get("ad2dc3_reset_cmd") });
+    // the DartBot wins the last leg: DartCounter ends the match, opens the end screen and goes back to the setup page
+    p.doc.getElementById("game").innerHTML = "";
+    p.w.history.pushState({}, "", "/local-games/cricket-tactics");
+    const es = p.doc.createElement("app-cricket-tactics-local-end-screen-dialog"); es.textContent = "Rematch";
+    p.doc.body.append(es);
+    await sleep(2500);
+    const cmd = store.get("ad2dc3_reset_cmd");
+    check("3.6.1: lost Cricket match: end screen on the setup page -> order 'match' for Cricket, won = false", cmd && cmd.kind === "match" && cmd.game === "cricket" && cmd.won === false,
+      { cmd, logs: p.g.logs.filter(l => /koniec|Reset/.test(l)).slice(-4) });
+    store.set("ad2dc3_reset_ack", { id: cmd.id, ts: Date.now(), state: "ok", how: "leg od nowa: cofnięty przyciskiem Undo (3×)" });
+    // "Rematch"
+    es.remove();
+    for (const t of p.g.teams) { t.points = 0; t.legs = 0; for (const f of Object.keys(t.marks)) t.marks[f] = 0; }
+    p.g.cur = 0;
+    p.w.history.pushState({}, "", "/game/cricket-tactics");
+    p.render();
+    await sleep(3000);
+    const nc = store.get("ad2dc3_reset_cmd");
+    check("3.6.1: Cricket Rematch -> new game at the start of the match -> order 'new' for Cricket", nc && nc.kind === "new" && nc.game === "cricket" && nc.id !== cmd.id, { nc, logs: p.g.logs.slice(-4) });
+    publish(store, [T(20, 3)]); await sleep(4000);
+    check("3.6.1: after the Cricket rematch the next visit is entered", JSON.stringify(p.g.turns[p.g.turns.length - 1]) === '["T20"]', p.g.turns);
     clearInterval(hb); p.w.close();
   }
   // manual board Reset: a well visible button on top of the overlay (and Alt+Shift+R)

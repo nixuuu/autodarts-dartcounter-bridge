@@ -88,7 +88,7 @@ function makeAtcPage(store, opts) {
   w.console.log = () => {};
   w.console.warn = (...a) => { g.warns.push(a); };
   w.eval(SCRIPT);
-  return { w, doc, g, api };
+  return { w, doc, g, api, render };
 }
 
 function publish(store, id, throws, variant, settings, finished) {
@@ -153,6 +153,48 @@ function check(name, cond, info) { if (cond) console.log("ok   " + name); else {
     check("ATC: Autodarts finished on 25 -> order to start the Autodarts game again (kind atc)", cmd && cmd.kind === "atc", cmd);
     publish(store, "a3/0.0.1.0~e1", [seg(25, 2)], "ATC", ATC); await sleep(3500);
     check("ATC: after the restart the bullseye finishes DartCounter", p.g.finished && JSON.stringify(p.g.turns[1]) === '["D25"]', p.g.turns);
+    clearInterval(hb); p.w.close();
+  }
+
+  // 3.6.1: the end of an Around the Clock game as DartCounter does it (app code): the end screen opens on the setup page
+  // /local-games/around-the-clock after the game page -> order "match" for Around the Clock (won: the game ended right
+  // after our visit); "Rematch" -> the game page at target 1 -> order "new"
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    const p = makeAtcPage(store, { startAt: 19 });
+    await sleep(1500);
+    publish(store, "a6/0.0.1.0", [seg(20, 1), seg(25, 2)], "ATC", ATC, true); await sleep(2500);
+    check("3.6.1 ATC: S20 + bullseye finish DartCounter", p.g.finished && JSON.stringify(p.g.turns[0]) === '["S20","D25"]', p.g.turns);
+    p.doc.getElementById("game").innerHTML = "";
+    p.w.history.pushState({}, "", "/local-games/around-the-clock");
+    const es = p.doc.createElement("app-around-the-clock-local-end-screen-dialog"); es.textContent = "Rematch";
+    p.doc.body.append(es);
+    await sleep(2500);
+    const cmd = store.map.has("ad2dc3_reset_cmd") ? JSON.parse(store.map.get("ad2dc3_reset_cmd")) : null;
+    check("3.6.1 ATC: won game, end screen on the setup page -> order 'match' for Around the Clock, won = true", cmd && cmd.kind === "match" && cmd.game === "atc" && cmd.won === true, cmd);
+    const bc = store.map.has("ad2dc3_board_cmd") ? JSON.parse(store.map.get("ad2dc3_board_cmd")) : null;
+    check("3.6.1 ATC: end of the game -> board Reset order too", bc && /koniec gry \(wygrany\)/.test(bc.what), bc);
+    es.remove();
+    Object.assign(p.g, { at: 0, finished: false, throws: [] });
+    p.w.history.pushState({}, "", "/game/around-the-clock");
+    p.render();
+    await sleep(3000);
+    const nc = store.map.has("ad2dc3_reset_cmd") ? JSON.parse(store.map.get("ad2dc3_reset_cmd")) : null;
+    check("3.6.1 ATC: Rematch -> target 1 at the start -> order 'new' for Around the Clock", nc && nc.kind === "new" && nc.game === "atc" && nc.id !== cmd.id, nc);
+    clearInterval(hb); p.w.close();
+  }
+  // 3.6.1: Around the Clock lost (DartCounter ends the game long after our last visit) -> order 'match', won = false
+  {
+    const store = makeStore(), hb = heartbeat(store);
+    const p = makeAtcPage(store, { startAt: 4 });
+    await sleep(1500);
+    publish(store, "a7/0.0.1.0", [seg(5, 1), seg(6, 1), seg(9, 1)], "ATC", ATC); await sleep(6000);
+    p.doc.getElementById("game").innerHTML = "";
+    p.w.history.pushState({}, "", "/local-games/around-the-clock");
+    p.doc.body.append(p.doc.createElement("app-around-the-clock-local-end-screen-dialog"));
+    await sleep(2500);
+    const cmd = store.map.has("ad2dc3_reset_cmd") ? JSON.parse(store.map.get("ad2dc3_reset_cmd")) : null;
+    check("3.6.1 ATC: lost game -> order 'match' for Around the Clock, won = false", cmd && cmd.kind === "match" && cmd.game === "atc" && cmd.won === false, cmd);
     clearInterval(hb); p.w.close();
   }
 
